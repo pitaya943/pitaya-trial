@@ -49,3 +49,48 @@ def test_ties_go_to_the_member_added_first():
     # Ana and Bo owe the same; Cy and Di are owed the same. Member order decides who goes first.
     balances = {"Di": 500, "Ana": -500, "Cy": 500, "Bo": -500}
     assert settle_up(balances) == [Payment("Ana", "Di", 500), Payment("Bo", "Cy", 500)]
+
+
+# --- T-002: exact minimum for up to 12 members ---------------------------------------------
+
+
+def grouped_balances(rng: random.Random, max_members: int = 7) -> dict[str, int]:
+    """Balances built from random zero-sum groups, then shuffled, so a smaller minimum often exists."""
+    values: list[int] = []
+    while len(values) < max_members - 1:
+        size = rng.randint(2, min(3, max_members - len(values)))
+        group = [rng.choice([-3, -2, -1, 1, 2, 3]) * 100 for _ in range(size - 1)]
+        values += group + [-sum(group)]
+    values = values[:max_members]
+    values[-1] -= sum(values)  # keep the total at 0 if the last group was cut
+    rng.shuffle(values)
+    return {f"m{i}": v for i, v in enumerate(values)}
+
+
+def set_partitions(items: list[int]):
+    """Every partition of `items` into blocks (Bell(7) = 877 for 7 items)."""
+    if not items:
+        yield []
+        return
+    first, rest = items[0], items[1:]
+    for partition in set_partitions(rest):
+        for i in range(len(partition)):
+            yield partition[:i] + [[first] + partition[i]] + partition[i + 1:]
+        yield [[first]] + partition
+
+
+def oracle_minimum(balances: dict[str, int]) -> int:
+    """n minus the largest number of blocks that each sum to 0, over every partition: the true minimum."""
+    values = [v for v in balances.values() if v != 0]
+    if not values:
+        return 0
+    best = max(len(p) for p in set_partitions(values) if all(sum(block) == 0 for block in p))
+    return len(values) - best
+
+
+@pytest.mark.parametrize("seed", range(300))
+def test_exact_matches_brute_force_minimum(seed):
+    balances = grouped_balances(random.Random(seed))
+    payments = settle_up(balances)
+    assert all(v == 0 for v in apply(balances, payments).values()), f"seed {seed}"
+    assert len(payments) == oracle_minimum(balances), f"seed {seed}"
