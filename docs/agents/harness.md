@@ -4,7 +4,7 @@ Read by every pitaya skill before it plans, builds, verifies or reports. Written
 
 ## Level
 
-- Level: 1. What it includes: `docs/levels.md` in the pitaya plugin; what each part achieves: `docs/suggestion.md`. Raise it by adding guardrail recipes; record each under "Guardrails" below.
+- Level: 2. What it includes: `docs/levels.md` in the pitaya plugin; what each part achieves: `docs/suggestion.md`. Raise it by adding guardrail recipes; record each under "Guardrails" below.
 - Templates: pitaya 0.1.1. The version `/setup` installed; re-run `/setup` to find stale copies.
 
 ## People and accounts
@@ -48,4 +48,9 @@ Guardrails in place. Skills rely on these being enforced by hooks or CI rather t
 
 - Session guards (`.claude/settings.json` and `.claude/hooks/`): Read denied on secrets; hooks block pushes to `main` and destructive commands, and ask before edits to rule files and before merges.
 - Tests workflow (`.github/workflows/tests.yml`): runs the test command on every PR and push to `main`.
+- Ticket checks (`.github/workflows/` with scripts in `.github/guardrails/`), Level 2, run on every pull request. They need the repository variable `MACHINE_ACCOUNT` (the agents' login); until it is set they fail. Make each a required check after its first run.
+  - `scope` (`scope.yml`, `check_scope.py`): a ticket PR changes only the paths in its ticket's "## Scope". "Scope" is a required ticket field.
+  - `read-only-paths` (`read-only-paths.yml`, `check_read_only.py`): a ticket PR can't change rule, CI, decision, ticket or milestone files unless its scope names the exact file. Extra paths in `--also`: `docs/spec.md`.
+  - `no-weakened-tests` (`no-weakened-tests.yml`, `compare_junit.py`): every test that passes on the base still exists and passes on the PR. CI runs the test command with `--junitxml` to write JUnit XML.
+  - `done-when` (`done-when.yml`, `check_done_when.py`): every test listed under the ticket's "## Test IDs" exists and passes. "Test IDs" is a required ticket field.
 - Protect main: pending. The Owner creates the ruleset (see "Repo settings" in the setup report); until then nothing on GitHub stops a direct push to `main` except the session hook.

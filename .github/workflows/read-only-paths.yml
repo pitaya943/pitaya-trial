@@ -1,0 +1,127 @@
+# pitaya template 0.1.1 · docs/guardrails/files/read-only-paths/read-only-paths.yml
+# Fails a pull request that changes rule files, specs or CI, unless its ticket lists the exact file.
+# Copy to .github/workflows/read-only-paths.yml, and check_read_only.py to .github/guardrails/check_read_only.py.
+# Set the repository variable MACHINE_ACCOUNT to the agents' login (comma separated for several), then
+# make the "read-only-paths" check required on main in the ruleset.
+name: read-only-paths
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+jobs:
+  read-only-paths:
+    name: read-only-paths
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Load the checks from the base branch
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Run the base branch's copy of each check, so a pull request can't change the check
+          # that judges it. The PR's own copy is used only while the base has none yet: the PR
+          # that adds this guardrail.
+          mkdir -p "$RUNNER_TEMP/guardrails"
+          for f in check_read_only.py; do
+            git show "origin/$BASE_REF:.github/guardrails/$f" > "$RUNNER_TEMP/guardrails/$f" 2>/dev/null \
+              || cp ".github/guardrails/$f" "$RUNNER_TEMP/guardrails/$f"
+          done
+      - name: Find the ticket
+        id: ticket
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MACHINE_ACCOUNT: ${{ vars.MACHINE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          fail() { echo "FAIL: $1"; echo "To fix: $2"; exit 1; }
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' '; }
+          # is_agent: the PR's author is listed in MACHINE_ACCOUNT (comma separated, any case).
+          is_agent() {
+            case ",$(lower "$MACHINE_ACCOUNT")," in *",$(lower "$PR_AUTHOR"),"*) return 0;; esac
+            return 1
+          }
+          [ -n "${MACHINE_ACCOUNT:-}" ] || fail "the repository variable MACHINE_ACCOUNT is not set, so agents' PRs can't be told from people's." \
+            "set MACHINE_ACCOUNT (Settings, Secrets and variables, Actions, Variables) to the agents' login."
+          # find_ticket <branch> <output file>. When docs/tickets/ exists on the base branch,
+          # tickets are files and only a file there counts; otherwise the open GitHub issue
+          # numbered in ticket/<number>-<slug>. A done or closed ticket can't be claimed.
+          find_ticket() {
+            if git cat-file -e "origin/$BASE_REF:docs/tickets" 2>/dev/null; then
+              for f in $(git ls-tree --name-only "origin/$BASE_REF" docs/tickets/ | grep '\.md$'); do
+                n=$(basename "$f" .md)
+                case "$1" in "ticket/$n"|"ticket/$n-"*)
+                  git show "origin/$BASE_REF:$f" > "$2"
+                  if grep -qiE '^Status:[[:space:]]*done' "$2"; then
+                    fail "ticket $n is already done." "work on an open ticket; if $n needs more, ask the Owner for a new ticket."
+                  fi
+                  echo "ticket_path=$f" >> "$GITHUB_OUTPUT"
+                  claimed "$n"
+                  return 0;;
+                esac
+              done
+              return 1
+            fi
+            num=$(printf '%s' "$1" | sed -n 's#^ticket/\([0-9][0-9]*\).*#\1#p')
+            [ -n "$num" ] || return 1
+            state=$(gh issue view "$num" --repo "$GITHUB_REPOSITORY" --json state -q .state)
+            [ "$state" = "OPEN" ] || fail "issue #$num is $state." "work on an open ticket issue."
+            gh issue view "$num" --repo "$GITHUB_REPOSITORY" --json body -q .body > "$2"
+            claimed "$num"
+          }
+          # claimed <id>: fail when another open PR already works on the same ticket.
+          claimed() {
+            [ -n "${PR_NUMBER:-}" ] || return 0
+            others=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number,headRefName \
+              --jq ".[] | select(.number != $PR_NUMBER) | .headRefName" | grep -E "^ticket/$1(-|\$)" || true)
+            [ -z "$others" ] || fail "another open PR already works on ticket $1: $others." "one ticket, one PR: close one of them."
+          }
+          # A plan PR (plan/<slug>) adds ticket files for the Owner to merge; it may touch
+          # only ticket and planning files, and the ticket checks don't apply to it.
+          if [ "${HEAD_REF#milestone/}" != "$HEAD_REF" ]; then
+            # A milestone PR (milestone/M<n> into main) gathers tickets that passed these checks
+            # on their way into the milestone; the Owner reviews it as a whole.
+            echo "This is a milestone PR: the Owner reviews and merges it; ticket checks don't apply."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ "${HEAD_REF#plan/}" != "$HEAD_REF" ]; then
+            other=$(git diff --name-only "origin/$BASE_REF...HEAD" \
+              | grep -vE '^(docs/(tickets|milestones|adr)/[^/]+\.md|docs/agents/(glossary|architecture)\.md|docs/decisions\.md)$' || true)
+            if [ -n "$other" ]; then
+              echo "FAIL: a plan PR may change only docs/tickets/*.md, docs/milestones/*.md, docs/adr/*.md, the glossary, the architecture map and docs/decisions.md. It also changes:"
+              printf '  %s\n' $other
+              echo "To fix: move those changes to a ticket branch, ticket/<id>-<slug>."
+              exit 1
+            fi
+            echo "This is a plan PR: only ticket and planning files changed, so ticket checks don't apply."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif find_ticket "$HEAD_REF" "$RUNNER_TEMP/ticket.md"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          elif ! is_agent; then
+            echo "Opened by $PR_AUTHOR, not an agent account, from a branch without a ticket: people review it."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            fail "the branch $HEAD_REF names no open ticket." \
+              "name the branch ticket/<id>-<slug> after an open ticket: docs/tickets/<id>.md on $BASE_REF, or issue <id>."
+          fi
+      - name: Check read-only paths
+        if: steps.ticket.outputs.skip != 'true'
+        # Add the project's spec paths to --also, comma separated, e.g. "docs/spec/**".
+        env:
+          TICKET_PATH: ${{ steps.ticket.outputs.ticket_path }}
+        run: >-
+          python3 "$RUNNER_TEMP/guardrails/check_read_only.py"
+          --base "${{ github.event.pull_request.base.sha }}"
+          --head "${{ github.event.pull_request.head.sha }}"
+          --ticket "$RUNNER_TEMP/ticket.md"
+          --ticket-path "$TICKET_PATH"
+          --also "docs/spec.md"

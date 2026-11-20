@@ -1,0 +1,206 @@
+# pitaya template 0.1.1 · docs/guardrails/files/no-weakened-tests/no-weakened-tests.yml
+# Fails a pull request when a test that passes on the base is missing, skipped or failing on the PR.
+# Copy to .github/workflows/no-weakened-tests.yml, and compare_junit.py to .github/guardrails/compare_junit.py.
+# Set the repository variable MACHINE_ACCOUNT to the agents' login (comma separated for several), then
+# make the "no-weakened-tests" check required on main in the ruleset.
+name: no-weakened-tests
+
+on:
+  pull_request:
+
+# The pull request's tests run in their own job, so its code can't touch the base
+# results or the comparing script; the comparison runs the base branch's copy.
+permissions:
+  contents: read
+  issues: read
+  pull-requests: read
+
+env:
+  # The test command, writing JUnit XML to "$JUNIT". For pytest:
+  #   python -m pytest -q --junitxml="$JUNIT"
+  TEST_COMMAND: .venv/bin/python -m pytest -q --junitxml="$JUNIT"
+
+jobs:
+  ticket:
+    name: find the ticket
+    runs-on: ubuntu-24.04
+    outputs:
+      skip: ${{ steps.ticket.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+      - name: Find the ticket
+        id: ticket
+        env:
+          GH_TOKEN: ${{ github.token }}
+          HEAD_REF: ${{ github.head_ref }}
+          BASE_REF: ${{ github.base_ref }}
+          PR_AUTHOR: ${{ github.event.pull_request.user.login }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          MACHINE_ACCOUNT: ${{ vars.MACHINE_ACCOUNT }}
+        run: |
+          set -euo pipefail
+          fail() { echo "FAIL: $1"; echo "To fix: $2"; exit 1; }
+          lower() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d ' '; }
+          # is_agent: the PR's author is listed in MACHINE_ACCOUNT (comma separated, any case).
+          is_agent() {
+            case ",$(lower "$MACHINE_ACCOUNT")," in *",$(lower "$PR_AUTHOR"),"*) return 0;; esac
+            return 1
+          }
+          [ -n "${MACHINE_ACCOUNT:-}" ] || fail "the repository variable MACHINE_ACCOUNT is not set, so agents' PRs can't be told from people's." \
+            "set MACHINE_ACCOUNT (Settings, Secrets and variables, Actions, Variables) to the agents' login."
+          # find_ticket <branch> <output file>. When docs/tickets/ exists on the base branch,
+          # tickets are files and only a file there counts; otherwise the open GitHub issue
+          # numbered in ticket/<number>-<slug>. A done or closed ticket can't be claimed.
+          find_ticket() {
+            if git cat-file -e "origin/$BASE_REF:docs/tickets" 2>/dev/null; then
+              for f in $(git ls-tree --name-only "origin/$BASE_REF" docs/tickets/ | grep '\.md$'); do
+                n=$(basename "$f" .md)
+                case "$1" in "ticket/$n"|"ticket/$n-"*)
+                  git show "origin/$BASE_REF:$f" > "$2"
+                  if grep -qiE '^Status:[[:space:]]*done' "$2"; then
+                    fail "ticket $n is already done." "work on an open ticket; if $n needs more, ask the Owner for a new ticket."
+                  fi
+                  echo "ticket_path=$f" >> "$GITHUB_OUTPUT"
+                  claimed "$n"
+                  return 0;;
+                esac
+              done
+              return 1
+            fi
+            num=$(printf '%s' "$1" | sed -n 's#^ticket/\([0-9][0-9]*\).*#\1#p')
+            [ -n "$num" ] || return 1
+            state=$(gh issue view "$num" --repo "$GITHUB_REPOSITORY" --json state -q .state)
+            [ "$state" = "OPEN" ] || fail "issue #$num is $state." "work on an open ticket issue."
+            gh issue view "$num" --repo "$GITHUB_REPOSITORY" --json body -q .body > "$2"
+            claimed "$num"
+          }
+          # claimed <id>: fail when another open PR already works on the same ticket.
+          claimed() {
+            [ -n "${PR_NUMBER:-}" ] || return 0
+            others=$(gh pr list --repo "$GITHUB_REPOSITORY" --state open --json number,headRefName \
+              --jq ".[] | select(.number != $PR_NUMBER) | .headRefName" | grep -E "^ticket/$1(-|\$)" || true)
+            [ -z "$others" ] || fail "another open PR already works on ticket $1: $others." "one ticket, one PR: close one of them."
+          }
+          # A plan PR (plan/<slug>) adds ticket files for the Owner to merge; it may touch
+          # only ticket and planning files, and the ticket checks don't apply to it.
+          if [ "${HEAD_REF#milestone/}" != "$HEAD_REF" ]; then
+            # A milestone PR (milestone/M<n> into main) gathers tickets that passed these checks
+            # on their way into the milestone; the Owner reviews it as a whole.
+            echo "This is a milestone PR: the Owner reviews and merges it; ticket checks don't apply."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif [ "${HEAD_REF#plan/}" != "$HEAD_REF" ]; then
+            other=$(git diff --name-only "origin/$BASE_REF...HEAD" \
+              | grep -vE '^(docs/(tickets|milestones|adr)/[^/]+\.md|docs/agents/(glossary|architecture)\.md|docs/decisions\.md)$' || true)
+            if [ -n "$other" ]; then
+              echo "FAIL: a plan PR may change only docs/tickets/*.md, docs/milestones/*.md, docs/adr/*.md, the glossary, the architecture map and docs/decisions.md. It also changes:"
+              printf '  %s\n' $other
+              echo "To fix: move those changes to a ticket branch, ticket/<id>-<slug>."
+              exit 1
+            fi
+            echo "This is a plan PR: only ticket and planning files changed, so ticket checks don't apply."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          elif find_ticket "$HEAD_REF" "$RUNNER_TEMP/ticket.md"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          elif ! is_agent; then
+            echo "Opened by $PR_AUTHOR, not an agent account, from a branch without a ticket: people review it."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            fail "the branch $HEAD_REF names no open ticket." \
+              "name the branch ticket/<id>-<slug> after an open ticket: docs/tickets/<id>.md on $BASE_REF, or issue <id>."
+          fi
+      - name: Keep the ticket for the check
+        if: steps.ticket.outputs.skip != 'true'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ticket
+          path: ${{ runner.temp }}/ticket.md
+  base-tests:
+    name: tests on the base
+    needs: ticket
+    if: needs.ticket.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+      # Add the setup steps the test command needs here (a runtime, dependencies).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Same venv as tests.yml and docs/agents/harness.md, so the command runs as recorded.
+      - name: Create the virtualenv and install pytest
+        run: python -m venv .venv && .venv/bin/pip install pytest
+      - name: Run the tests
+        run: JUNIT="$RUNNER_TEMP/base.xml" bash -c "$TEST_COMMAND" || true
+      - name: Keep the results
+        uses: actions/upload-artifact@v7
+        with:
+          name: base-junit
+          path: ${{ runner.temp }}/base.xml
+          if-no-files-found: ignore
+  head-tests:
+    name: tests on the PR
+    needs: ticket
+    if: needs.ticket.outputs.skip != 'true'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      # Add the setup steps the test command needs here (a runtime, dependencies).
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Same venv as tests.yml and docs/agents/harness.md, so the command runs as recorded.
+      - name: Create the virtualenv and install pytest
+        run: python -m venv .venv && .venv/bin/pip install pytest
+      - name: Run the tests
+        run: JUNIT="$RUNNER_TEMP/head.xml" bash -c "$TEST_COMMAND" || true
+      - name: Keep the results
+        uses: actions/upload-artifact@v7
+        with:
+          name: head-junit
+          path: ${{ runner.temp }}/head.xml
+          if-no-files-found: ignore
+  no-weakened-tests:
+    name: no-weakened-tests
+    needs: [ticket, base-tests, head-tests]
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Require a ticket
+        env:
+          RESULT: ${{ needs.ticket.result }}
+          SKIP: ${{ needs.ticket.outputs.skip }}
+        run: |
+          if [ "$RESULT" != "success" ]; then echo "FAIL: the find-the-ticket job failed; its log says why."; exit 1; fi
+          if [ "$SKIP" = "true" ]; then echo "Nothing to check: see the find-the-ticket job."; fi
+      - uses: actions/checkout@v6
+        if: needs.ticket.outputs.skip != 'true'
+        with:
+          fetch-depth: 0
+      - name: Load the checks from the base branch
+        if: needs.ticket.outputs.skip != 'true'
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          # Run the base branch's copy of each check, so a pull request can't change the check
+          # that judges it. The PR's own copy is used only while the base has none yet: the PR
+          # that adds this guardrail.
+          mkdir -p "$RUNNER_TEMP/guardrails"
+          for f in compare_junit.py; do
+            git show "origin/$BASE_REF:.github/guardrails/$f" > "$RUNNER_TEMP/guardrails/$f" 2>/dev/null \
+              || cp ".github/guardrails/$f" "$RUNNER_TEMP/guardrails/$f"
+          done
+      - name: Collect the results
+        if: needs.ticket.outputs.skip != 'true'
+        uses: actions/download-artifact@v8
+        with:
+          path: ${{ runner.temp }}/results
+      - name: Check
+        if: needs.ticket.outputs.skip != 'true'
+        run: >-
+          python3 "$RUNNER_TEMP/guardrails/compare_junit.py"
+          --base "$RUNNER_TEMP/results/base-junit/base.xml"
+          --head "$RUNNER_TEMP/results/head-junit/head.xml"
+          --ticket "$RUNNER_TEMP/results/ticket/ticket.md"
