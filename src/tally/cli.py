@@ -15,7 +15,22 @@ from .settle import settle_up, uses_exact
 
 
 def load(path: Path) -> Ledger:
-    return Ledger.from_dict(json.loads(path.read_text())) if path.exists() else Ledger()
+    """Read the ledger file, or start an empty ledger when there is none.
+
+    A file that can't be decoded raises TallyError (one line, no traceback) before any command runs,
+    so nothing reaches save() and the file stays as it was (D-14). Shape checks live in from_dict.
+    """
+    if not path.exists():
+        return Ledger()
+    try:
+        data = json.loads(path.read_bytes().decode("utf-8"))
+    except UnicodeDecodeError:
+        raise TallyError("ledger file is not UTF-8 text") from None
+    except json.JSONDecodeError as exc:
+        # exc.msg without its "(char n)" tail; line and column are what an editor shows.
+        raise TallyError(f"ledger file is not valid JSON: {exc.msg} at line {exc.lineno}, "
+                         f"column {exc.colno}") from None
+    return Ledger.from_dict(data)
 
 
 def save(ledger: Ledger, path: Path) -> None:
