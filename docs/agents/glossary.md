@@ -15,3 +15,6 @@ The project's own words, so people, agents and code use the same name for the sa
 | share | One participant's part of an expense, in cents. | portion, cut |
 | balance | What a member paid minus their shares of everything; positive means others owe them. All balances sum to zero. | debt, total |
 | cents | The unit of every amount: an integer, never a float. | amount in dollars |
+| settle up | A list of payments that would clear every balance; computed, not recorded. | settle (that's recording one payment) |
+| settlement | A recorded payment from one member to another that pays back what they owe (from M2). | refund, transfer |
+| ledger version | The `version` number in the ledger file; absent means v0.1 (from M2). | schema number |
