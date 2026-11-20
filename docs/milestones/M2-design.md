@@ -2,7 +2,7 @@
 
 # M2 design: Settlements and a versioned file format
 
-Status: agreed by the Owner on 2026-11-20 (D-10 to D-13, [ADR 0003](../adr/0003-one-ordered-entries-list.md)). Tickets: T-003, T-004, T-005.
+Status: agreed by the Owner on 2026-11-20 (D-10 to D-13, [ADR 0003](../adr/0003-one-ordered-entries-list.md)). Tickets: T-003, T-004, T-005, T-006 (added by D-14).
 
 ## Scenarios
 
@@ -25,8 +25,12 @@ Example group used below (`_group` in `tests/test_cli.py`): Ana pays 30.00 for A
 | S-13 | A saved ledger file; a fresh path with no file | A normal save | The file holds the full new content, its permission bits are preserved (existing file) and no temp file is left behind | `tests/test_save.py::test_save_replaces_the_file_and_leaves_no_temp_file` |
 | S-14 | The whole repository | `.venv/bin/python -m pytest -q` | Passes locally and in CI | the test command |
 | S-15 | Ana 17.00, Bo −7.00 (example group) | `add_settlement("Bo", "Ana", 1000)`: more than Bo owes (D-12) | Recorded: Bo +3.00, Ana 7.00; balances still sum to 0 | `tests/test_ledger.py::test_overpaying_settlement_is_recorded` |
+| S-16 | A file `{"version": 2, "members": ["Ana", "Bo"], "expenses": [{"payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"], "note": ""}]}` (a v0.1 body with a version 2 line) | Any command | `TallyError` naming the missing `entries`; exit 1; bytes and mtime unchanged. With T-003's reader it loads as an empty ledger, and the next save writes `"entries": []` (the data loss the T-003 verifiers found) | `tests/test_cli.py::test_v2_file_without_entries_is_refused` |
+| S-17 | A file with `members` and `entries` but no `version` | Any command | `TallyError` naming `version`, not read as v0.1 with zero expenses; file unchanged | `tests/test_cli.py::test_entries_without_version_is_refused` |
+| S-18 | A file that isn't JSON (`{"members": [`), or whose top level is `[]`, `"x"` or `3` | Any command | `error: <one line>` on stderr, exit 1, no traceback; file unchanged | `tests/test_cli.py::test_unreadable_or_non_object_file_is_refused` |
+| S-19 | A version 2 entry that is `"x"`, an expense without `payer`, `amount` or `participants`, a settlement without `receiver`; a v0.1 expense without `amount` | `Ledger.from_dict` | `TallyError` naming the entry's position (from 1) and the missing field; nothing recorded | `tests/test_ledger.py::test_malformed_entries_are_refused` |
 
-Exit criteria coverage: 1 → S-1, S-2, S-3, S-15; 2 → S-4, S-5; 3 → S-6, S-7, S-8, S-9; 4 → S-10, S-11; 5 → S-12, S-13; 6 → S-14.
+Exit criteria coverage: 1 → S-1, S-2, S-3, S-15; 2 → S-4, S-5; 3 → S-6, S-7, S-8, S-9; 4 → S-10, S-11; 5 → S-12, S-13; 6 → S-14; 7 → S-16, S-17, S-18, S-19.
 
 ## Interfaces
 
@@ -133,5 +137,6 @@ Known limits, not addressed (say if you want them): saving through a symlink rep
 | T-003 Versioned ledger file format | S-6, S-7, S-8, S-9, S-10, S-11 | none | T-004 |
 | T-004 Atomic save | S-12, S-13 | none | T-003 |
 | T-005 Record settlements | S-1, S-2, S-3, S-4, S-5, S-15 | T-003, T-004 | none |
+| T-006 Refuse malformed ledger files | S-16, S-17, S-18, S-19 | T-005 | none (same files as T-005) |
 
 S-14 (the full test command) is a done-when condition of every ticket.
