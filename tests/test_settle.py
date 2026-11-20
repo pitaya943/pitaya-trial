@@ -126,3 +126,15 @@ def test_greedy_above_the_limit():
     assert uses_exact(at_limit)
     assert not uses_exact(above)
     assert settle_up(above) == _greedy(above)
+
+
+@pytest.mark.parametrize("nonzero, exact", [(EXACT_LIMIT, True), (EXACT_LIMIT + 1, False)])
+def test_exact_limit_boundary(nonzero, exact):
+    # Pins the cap itself: exactly 12 members with a non-zero balance use exact, exactly 13 use greedy.
+    # Zero balances don't count toward the cap.
+    values = [100 * (i + 1) for i in range(nonzero - 1)]
+    values.append(-sum(values))
+    balances = {f"m{i}": v for i, v in enumerate(values)} | {"z0": 0, "z1": 0}
+    assert uses_exact(balances) is exact
+    if not exact:
+        assert settle_up(balances) == _greedy(balances)

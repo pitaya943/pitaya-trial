@@ -1,3 +1,5 @@
+import pytest
+
 from tally.cli import main
 
 
@@ -80,3 +82,18 @@ def test_cli_settle_up_keeps_a_hand_formatted_ledger_untouched(tmp_path):
     assert main(["--ledger", str(path), "settle-up"]) == 0
     assert path.read_bytes() == before
     assert path.stat().st_mtime_ns == mtime
+
+
+@pytest.mark.parametrize("members, note", [(12, False), (13, True)])
+def test_cli_settle_up_note_at_the_limit(tmp_path, capsys, members, note):
+    # Pins the 12/13 boundary at the CLI: one payer covers everyone else, so all members are non-zero.
+    path = tmp_path / "t.json"
+    ledger = ["--ledger", str(path)]
+    names = [f"M{i:02d}" for i in range(members)]
+    for name in names:
+        main(ledger + ["add-member", name])
+    main(ledger + ["add-expense", names[0], f"{members - 1}.00", "--among", *names[1:]])
+    capsys.readouterr()
+    assert main(ledger + ["settle-up"]) == 0
+    expected = "note: greedy method; this may not be the minimum number of payments\n" if note else ""
+    assert capsys.readouterr().err == expected
