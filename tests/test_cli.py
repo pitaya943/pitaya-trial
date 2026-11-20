@@ -1,3 +1,8 @@
+import json
+import os
+import shutil
+from pathlib import Path
+
 import pytest
 
 from tally.cli import main
@@ -97,3 +102,16 @@ def test_cli_settle_up_note_at_the_limit(tmp_path, capsys, members, note):
     assert main(ledger + ["settle-up"]) == 0
     expected = "note: greedy method; this may not be the minimum number of payments\n" if note else ""
     assert capsys.readouterr().err == expected
+
+
+# --- ledger file format (T-003) ---------------------------------------------------
+
+FIXTURE = Path(__file__).parent / "fixtures" / "v0.1.json"
+# Printed by the v0.1 `tally balances` on the fixture when it was generated. Hard-coded on purpose:
+# recomputing them with the current code could not catch a change in how old files are read (learning 1).
+V01_BALANCES = "Ana\t80.82\nbo\t-29.12\nCy\t-15.02\nDeeDee\t-36.68\n"
+
+
+def test_v01_fixture_loads_with_the_same_balances(capsys):
+    assert main(["--ledger", str(FIXTURE), "balances"]) == 0
+    assert capsys.readouterr().out == V01_BALANCES
