@@ -176,3 +176,18 @@ def test_overpaying_settlement_is_recorded():
     assert ledger.balances() == {"Ana": 700, "Bo": 300, "Cy": -1000}
     assert sum(ledger.balances().values()) == 0
     assert len(ledger.settlements) == 1
+
+
+def test_round_trip_keeps_settlements_among_expenses():
+    # The file format (a sensitive area): a settlement is an entry of kind "settlement" between expenses,
+    # written with display names, and read back to the same entries in the same order.
+    ledger = example_group()
+    ledger.add_settlement("bo", "ana", 700)
+    ledger.add_expense("Cy", 300, ["Ana", "Cy"])
+    data = ledger.to_dict()
+    assert data["entries"][2] == {"kind": "settlement", "payer": "Bo", "receiver": "Ana", "amount": 700}
+    assert [e["kind"] for e in data["entries"]] == ["expense", "expense", "settlement", "expense"]
+    again = Ledger.from_dict(data)
+    assert again.entries == ledger.entries
+    assert again.balances() == ledger.balances() == {"Ana": 850, "Bo": 0, "Cy": -850}
+    assert again.to_dict() == data

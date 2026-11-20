@@ -1,4 +1,4 @@
-"""The ledger: members, expenses and balances. Money is always integer cents (spec rule 1)."""
+"""The ledger: members, expenses, settlements and balances. Money is always integer cents (spec rule 1)."""
 
 from __future__ import annotations
 
@@ -124,7 +124,10 @@ class Ledger:
                 "members": list(self.members.values()),
                 "entries": [self._entry_to_dict(e) for e in self.entries]}
 
-    def _entry_to_dict(self, e: Expense) -> dict:
+    def _entry_to_dict(self, e: Expense | Settlement) -> dict:
+        if isinstance(e, Settlement):
+            return {"kind": "settlement", "payer": self.members[e.payer],
+                    "receiver": self.members[e.receiver], "amount": e.amount}
         return {"kind": "expense", "payer": self.members[e.payer], "amount": e.amount,
                 "participants": [self.members[p] for p in e.participants], "note": e.note}
 
@@ -149,7 +152,10 @@ class Ledger:
         for name in data.get("members", []):
             ledger.add_member(name)
         for e in entries:
-            if e.get("kind") != "expense":
+            if e.get("kind") == "expense":
+                ledger.add_expense(e["payer"], e["amount"], e["participants"], e.get("note", ""))
+            elif e.get("kind") == "settlement":
+                ledger.add_settlement(e["payer"], e["receiver"], e["amount"])
+            else:
                 raise TallyError(f"unknown entry kind {e.get('kind')!r} in the ledger file")
-            ledger.add_expense(e["payer"], e["amount"], e["participants"], e.get("note", ""))
         return ledger

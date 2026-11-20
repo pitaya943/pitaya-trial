@@ -1,4 +1,4 @@
-"""Command-line front end: tally add-member | add-expense | balances | settle-up, on a JSON ledger file."""
+"""Command-line front end: tally add-member | add-expense | settle | balances | settle-up, on a JSON ledger file."""
 
 from __future__ import annotations
 
@@ -56,6 +56,10 @@ def main(argv: list[str] | None = None) -> int:
     exp.add_argument("amount", help="for example 12.50")
     exp.add_argument("--among", nargs="+", help="participants (default: everyone)")
     exp.add_argument("--note", default="")
+    st = sub.add_parser("settle", help="record that <payer> paid <receiver> back")
+    st.add_argument("payer")
+    st.add_argument("receiver")
+    st.add_argument("amount", help="for example 7.00")
     sub.add_parser("balances")
     sub.add_parser("settle-up", help="list payments that would clear every balance (writes nothing)")
     args = parser.parse_args(argv)
@@ -66,6 +70,8 @@ def main(argv: list[str] | None = None) -> int:
             ledger.add_member(args.name)
         elif args.command == "add-expense":
             ledger.add_expense(args.payer, parse_amount(args.amount), args.among, args.note)
+        elif args.command == "settle":
+            ledger.add_settlement(args.payer, args.receiver, parse_amount(args.amount))
         elif args.command == "balances":
             for name, value in ledger.balances().items():
                 print(f"{name}\t{cents(value)}")
