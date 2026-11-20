@@ -1,6 +1,7 @@
 """Settle up (T-001). Property tests use seeded random ledgers (D-5), so a failure is reproducible by its seed."""
 
 import random
+import time
 
 import pytest
 
@@ -103,3 +104,25 @@ def test_exact_beats_greedy_when_a_smaller_group_clears_itself():
     assert len(exact) == 3
     assert all(v == 0 for v in apply(balances, exact).values())
     assert len(_greedy(balances)) == 4
+
+
+def test_exact_is_fast_at_the_limit():
+    rng = random.Random(12)
+    values = [rng.choice([-1, 1]) * rng.randint(1, 9) * 100 for _ in range(EXACT_LIMIT - 1)]
+    values.append(-sum(values) or 100)  # never 0, so all 12 members have a non-zero balance
+    if sum(values):
+        values[0] -= sum(values)
+    balances = {f"m{i}": v for i, v in enumerate(values)}
+    assert sum(1 for v in balances.values() if v) == EXACT_LIMIT and uses_exact(balances)
+    start = time.perf_counter()
+    payments = settle_up(balances)
+    assert time.perf_counter() - start < 1.0
+    assert all(v == 0 for v in apply(balances, payments).values())
+
+
+def test_greedy_above_the_limit():
+    at_limit = {f"m{i}": (100 if i % 2 else -100) for i in range(EXACT_LIMIT)}
+    above = {f"m{i}": (100 if i % 2 else -100) for i in range(EXACT_LIMIT + 2)}
+    assert uses_exact(at_limit)
+    assert not uses_exact(above)
+    assert settle_up(above) == _greedy(above)
