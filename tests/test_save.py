@@ -76,3 +76,24 @@ def test_failed_save_leaves_the_old_file_intact(tmp_path, monkeypatch):
 
     assert path.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["tally.json"]
+
+
+def test_save_replaces_the_file_and_leaves_no_temp_file(tmp_path):
+    # Over an existing file: full new content, the file's own mode kept. 0o640 differs from both
+    # mkstemp's 0o600 and the usual umask default 0o644, so neither default can pass by accident.
+    path = tmp_path / "tally.json"
+    save(_ledger("Ana"), path)
+    os.chmod(path, 0o640)
+    new = _ledger("Ana", "Bo", "Cy")
+    save(new, path)
+    assert path.read_text() == json.dumps(new.to_dict(), indent=2) + "\n"
+    assert load(path).to_dict() == new.to_dict()
+    assert stat.S_IMODE(path.stat().st_mode) == 0o640
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["tally.json"]
+
+    # To a path with no file: the file is created, and still no temp file is left.
+    fresh = tmp_path / "sub" / "new.json"
+    fresh.parent.mkdir()
+    save(new, fresh)
+    assert load(fresh).to_dict() == new.to_dict()
+    assert sorted(p.name for p in fresh.parent.iterdir()) == ["new.json"]
