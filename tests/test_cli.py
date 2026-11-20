@@ -115,3 +115,63 @@ V01_BALANCES = "Ana\t80.82\nbo\t-29.12\nCy\t-15.02\nDeeDee\t-36.68\n"
 def test_v01_fixture_loads_with_the_same_balances(capsys):
     assert main(["--ledger", str(FIXTURE), "balances"]) == 0
     assert capsys.readouterr().out == V01_BALANCES
+
+
+def _copy_of_fixture(tmp_path):
+    """A copy of the fixture with an old mtime, so a rewrite shows up even on a coarse clock."""
+    path = tmp_path / "v01.json"
+    shutil.copyfile(FIXTURE, path)
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    return path
+
+
+def test_cli_writes_version_2(tmp_path):
+    path, ledger = _group(tmp_path)
+    data = json.loads(path.read_text())
+    assert data["version"] == 2
+    assert "expenses" not in data
+    assert [e["kind"] for e in data["entries"]] == ["expense", "expense"]
+    assert [(e["payer"], e["amount"]) for e in data["entries"]] == [("Ana", 3000), ("Bo", 600)]
+
+
+def test_read_only_commands_do_not_upgrade_a_v01_file(tmp_path, capsys):
+    # Any write would change the bytes: the v2 writer adds "version" and renames "expenses".
+    path = _copy_of_fixture(tmp_path)
+    before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+    for command in ("balances", "settle-up"):
+        assert main(["--ledger", str(path), command]) == 0
+        assert path.read_bytes() == before
+        assert path.stat().st_mtime_ns == mtime
+    assert capsys.readouterr().out.startswith(V01_BALANCES)
+
+
+def test_v01_file_is_written_as_version_2_on_save(tmp_path, capsys):
+    path = _copy_of_fixture(tmp_path)
+    assert main(["--ledger", str(path), "add-member", "Dee"]) == 0
+    data = json.loads(path.read_text())
+    assert data["version"] == 2
+    assert "expenses" not in data
+    old = json.loads(FIXTURE.read_text())["expenses"]
+    assert data["entries"] == [{"kind": "expense", **e} for e in old]  # same expenses, same order
+    capsys.readouterr()
+    assert main(["--ledger", str(path), "balances"]) == 0
+    assert capsys.readouterr().out == V01_BALANCES + "Dee\t0.00\n"
+
+
+COMMANDS = [["add-member", "Dee"], ["add-expense", "Ana", "1.00"], ["balances"], ["settle-up"]]
+
+
+@pytest.mark.parametrize("version", [3, 99])
+@pytest.mark.parametrize("command", COMMANDS, ids=lambda c: c[0])
+def test_unknown_future_version_is_rejected_and_not_written(tmp_path, capsys, version, command):
+    # Hand-formatted (one line), so a stray save() would reformat it even if the content matched.
+    path = tmp_path / "t.json"
+    path.write_text(f'{{"version": {version}, "members": ["Ana", "Bo"], "entries": []}}')
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+    assert main(["--ledger", str(path), *command]) == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error: ")
+    assert f"version {version}" in err
+    assert path.read_bytes() == before
+    assert path.stat().st_mtime_ns == mtime

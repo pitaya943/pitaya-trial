@@ -62,3 +62,37 @@ def test_round_trip_through_dict():
     ledger.add_expense("Ana", 999, note="taxi")
     again = Ledger.from_dict(ledger.to_dict())
     assert again.balances() == ledger.balances()
+
+
+# --- ledger file format (T-003) ---------------------------------------------------
+
+
+def test_round_trip_keeps_entries_in_order():
+    # Recorded order differs from any sort by payer, amount or note, so a sorting writer or reader fails.
+    ledger = group("Ana", "Bo", "Cy")
+    ledger.add_expense("Cy", 500, ["Ana", "Cy"], "b")
+    ledger.add_expense("Ana", 9000, note="c")
+    ledger.add_expense("Bo", 1, ["Bo"], "a")
+    data = ledger.to_dict()
+    assert data["version"] == 2
+    assert [(e["kind"], e["payer"], e["amount"]) for e in data["entries"]] == [
+        ("expense", "Cy", 500), ("expense", "Ana", 9000), ("expense", "Bo", 1)]
+    again = Ledger.from_dict(data)
+    assert again.entries == ledger.entries
+    assert again.expenses == ledger.expenses
+    assert again.to_dict() == data
+
+
+@pytest.mark.parametrize("version", [1, 0, "2", None, True], ids=repr)
+def test_unsupported_version_values(version):
+    # Otherwise a valid v2 file, so the version alone decides. 1 and True must not be read as v0.1 or v2.
+    data = {"version": version, "members": ["Ana"], "entries": []}
+    with pytest.raises(TallyError) as caught:
+        Ledger.from_dict(data)
+    assert repr(version) in str(caught.value)
+
+
+def test_unknown_entry_kind_is_rejected():
+    data = {"version": 2, "members": ["Ana"], "entries": [{"kind": "gift", "payer": "Ana", "amount": 1}]}
+    with pytest.raises(TallyError, match="'gift'"):
+        Ledger.from_dict(data)
