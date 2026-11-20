@@ -229,3 +229,114 @@ def test_cli_settling_every_settle_up_payment_clears_balances(tmp_path, capsys):
     assert capsys.readouterr().out == "Ana\t0.00\nBo\t0.00\nCy\t0.00\n"
     assert main(ledger + ["settle-up"]) == 0
     assert capsys.readouterr().out == ""
+
+
+# --- malformed ledger files (T-006) --------------------------------------------------
+
+EVERY_COMMAND = [["balances"], ["settle-up"], ["add-member", "Dee"], ["add-expense", "Ana", "1.00"],
+                 ["settle", "Bo", "Ana", "1.00"]]
+
+
+def _refused_untouched(path, text, capsys, expected_err):
+    """Run every command on a file holding `text`; each must exit 1 with exactly `expected_err`
+    on stderr (one line, so no traceback) and leave the file's bytes and mtime as they were."""
+    for command in EVERY_COMMAND:
+        case = (text, command[0])
+        # Hand-formatted (one line, no trailing newline) and an old mtime, so a stray save()
+        # would show in the bytes even if it wrote the same content.
+        path.write_text(text)
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+        assert main(["--ledger", str(path), *command]) == 1, case
+        out = capsys.readouterr()
+        assert out.err == expected_err, case
+        assert out.out == "", case
+        assert path.read_bytes() == before, case
+        assert path.stat().st_mtime_ns == mtime, case
+
+
+def test_v2_file_without_entries_is_refused(tmp_path, capsys):
+    # S-16. One test, not parametrized: the done-when check matches this exact JUnit name.
+    # With T-003's reader each of these loaded as an empty ledger and the next save erased the expense.
+    expense = '{"payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"], "note": ""}'
+    texts = [f'{{"version": 2, "members": ["Ana", "Bo"], "expenses": [{expense}]}}',  # leftover v0.1 key
+             '{"version": 2, "members": ["Ana", "Bo"]}',                              # no list at all
+             '{"version": 2, "members": ["Ana", "Bo"], "entries": null}',             # not a list either
+             f'{{"version": 2, "members": ["Ana", "Bo"], "entries": {expense}}}']
+    for text in texts:
+        _refused_untouched(tmp_path / "t.json", text, capsys,
+                           'error: ledger version 2 needs an "entries" list\n')
+
+
+def test_entries_without_version_is_refused(tmp_path, capsys):
+    # S-17. A version 2 body without its version line: read as v0.1 it would have zero expenses,
+    # and the next save would write it out empty.
+    entry = '{"kind": "expense", "payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"], "note": ""}'
+    for text in (f'{{"members": ["Ana", "Bo"], "entries": [{entry}]}}',
+                 '{"members": ["Ana", "Bo"], "entries": []}'):
+        _refused_untouched(tmp_path / "t.json", text, capsys,
+                           'error: ledger file has "entries" but no "version"\n')
+
+
+def test_unreadable_or_non_object_file_is_refused(tmp_path, capsys):
+    # S-18. Whole stderr: one "error: " line and nothing else, so a traceback can't hide in it.
+    cases = [('{"members": [', "ledger file is not valid JSON: Expecting value at line 1, column 14"),
+             ("", "ledger file is not valid JSON: Expecting value at line 1, column 1"),
+             ('{"members": ["Ana"]} x', "ledger file is not valid JSON: Extra data at line 1, column 22"),
+             ("[]", "ledger file must be a JSON object, not a list"),
+             ('"x"', "ledger file must be a JSON object, not a string"),
+             ("3", "ledger file must be a JSON object, not a number"),
+             ("null", "ledger file must be a JSON object, not null")]
+    for text, message in cases:
+        _refused_untouched(tmp_path / "t.json", text, capsys, f"error: {message}\n")
+    # Bytes that aren't UTF-8 text at all are refused the same way, not with a UnicodeDecodeError.
+    path = tmp_path / "bin.json"
+    path.write_bytes(b'{"members": ["\xff"]}')
+    before = path.read_bytes()
+    assert main(["--ledger", str(path), "add-member", "Dee"]) == 1
+    assert capsys.readouterr().err == "error: ledger file is not UTF-8 text\n"
+    assert path.read_bytes() == before
+
+
+# --- fix round 1 (T-006 verifier, PR #27) -------------------------------------------
+
+
+def test_v01_expense_kind_comes_from_the_format_not_the_file(tmp_path, capsys):
+    # Problem 1. v0.1 has no "kind": every item under "expenses" is an expense, whatever stray
+    # "kind" it carries. Read as a settlement, Ana -> Bo 10.00 would give Ana 10.00 / Bo -10.00
+    # and drop the participants on save; as the expense it is, Ana 5.00 / Bo -5.00.
+    for kind in ("settlement", "gift", None, ["expense"]):
+        path = tmp_path / "t.json"
+        expense = {"kind": kind, "payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"],
+                   "receiver": "Bo", "note": ""}
+        path.write_text(json.dumps({"members": ["Ana", "Bo"], "expenses": [expense]}))
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+        assert main(["--ledger", str(path), "balances"]) == 0, kind
+        assert capsys.readouterr() == ("Ana\t5.00\nBo\t-5.00\n", ""), kind
+        assert (path.read_bytes(), path.stat().st_mtime_ns) == (before, mtime), kind  # read-only
+        assert main(["--ledger", str(path), "add-member", "Dee"]) == 0, kind
+        assert json.loads(path.read_text())["entries"] == [
+            {"kind": "expense", "payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"], "note": ""}], kind
+
+
+def test_entry_kind_that_is_not_a_known_string_is_refused(tmp_path, capsys):
+    # Problem 2. A list or an object can't be looked up in a dict (TypeError: unhashable), so the
+    # kind must be checked to be a string first. Second entry, so the position is checked too.
+    good = '{"kind": "expense", "payer": "Ana", "amount": 100, "participants": ["Ana"]}'
+    for kind, shown in (('["expense"]', "['expense']"), ("{}", "{}"), ('"Expense"', "'Expense'"),
+                        ("1", "1")):
+        text = f'{{"version": 2, "members": ["Ana", "Bo"], "entries": [{good}, {{"kind": {kind}}}]}}'
+        _refused_untouched(tmp_path / "t.json", text, capsys, f"error: entry 2 has unknown kind {shown}\n")
+
+
+def test_too_deeply_nested_or_too_long_json_is_refused(tmp_path, capsys):
+    # Problem 3. json.loads raises RecursionError for very deep nesting and a plain ValueError (not a
+    # JSONDecodeError) for an integer over Python's digit limit; both must be one line, no traceback.
+    # 500 levels decode fine (and are then refused as a list), so the depth case is really deep.
+    _refused_untouched(tmp_path / "t.json", "[" * 100_000, capsys,
+                       "error: ledger file is not valid JSON: nested too deeply\n")
+    _refused_untouched(tmp_path / "t.json", "[" * 100_000 + "]" * 100_000, capsys,
+                       "error: ledger file is not valid JSON: nested too deeply\n")
+    _refused_untouched(tmp_path / "t.json", '{"version": ' + "1" * 5000 + "}", capsys,
+                       "error: ledger file is not valid JSON: a number has too many digits\n")

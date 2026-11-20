@@ -132,13 +132,24 @@ class Ledger:
                 "participants": [self.members[p] for p in e.participants], "note": e.note}
 
     @classmethod
-    def from_dict(cls, data: dict) -> "Ledger":
+    def from_dict(cls, data: object) -> "Ledger":
         """Read a v0.1 file (no "version", an "expenses" list) or a version 2 file; refuse anything else.
 
-        Every entry goes through add_member / add_expense, so a file gets the same validation as the CLI.
+        Refusing is the safe default (D-14): a file read as something it isn't (a version 2 file without
+        "entries" read as empty) would be written back by the next save, silently losing what it held.
+        So every shape check raises TallyError before a Ledger exists, and no command can reach save().
+        Every entry then goes through add_member / add_expense / add_settlement, so a file gets the same
+        validation as the CLI.
         """
-        if "version" not in data:  # v0.1: each expense becomes an entry of kind "expense", same order
-            entries = [{"kind": "expense", **e} for e in data.get("expenses", [])]
+        if not isinstance(data, dict):
+            raise TallyError(f"ledger file must be a JSON object, not {_json_type(data)}")
+        if "version" not in data:  # v0.1: an "expenses" list; every item is an expense
+            if "entries" in data:  # a version 2 body that lost its version line, not a v0.1 file
+                raise TallyError('ledger file has "entries" but no "version"')
+            items = data.get("expenses", [])
+            if not isinstance(items, list):
+                raise TallyError('a ledger file with no "version" needs an "expenses" list')
+            label, fixed_kind = "expense", "expense"
         else:
             version = data["version"]
             # `type(...) is int` because True == 1 and isinstance(True, int): a bool is not a version.
@@ -147,15 +158,50 @@ class Ledger:
             if type(version) is not int or version != FORMAT_VERSION:
                 raise TallyError(f"unsupported ledger version {version!r} (this tally reads {FORMAT_VERSION}, "
                                  "or a file with no version)")
-            entries = data.get("entries", [])
+            # No default: a missing "entries" must not read as "no entries" (S-16).
+            items = data.get("entries")
+            if not isinstance(items, list):
+                raise TallyError(f'ledger version {FORMAT_VERSION} needs an "entries" list')
+            label, fixed_kind = "entry", None
         ledger = cls()
         for name in data.get("members", []):
             ledger.add_member(name)
-        for e in entries:
-            if e.get("kind") == "expense":
+        # One loop for both formats, so every item passes the same checks before it is recorded.
+        # A raise here discards the half-built ledger: from_dict never returns it, nothing reaches save().
+        for n, e in enumerate(items, start=1):
+            where = f"{label} {n}"
+            if not isinstance(e, dict):
+                raise TallyError(f"{where} is not an object")
+            # v0.1 has no kinds: the format says "expense", and a stray "kind" in the file is ignored.
+            kind = fixed_kind or e.get("kind")
+            # isinstance first: a list or object kind is unhashable, so `in _NEEDS` would raise TypeError.
+            if not isinstance(kind, str) or kind not in _NEEDS:
+                raise TallyError(f"{where} has unknown kind {kind!r}")
+            _check_fields(e, where if fixed_kind else f"{where} ({kind})", _NEEDS[kind])
+            if kind == "expense":
                 ledger.add_expense(e["payer"], e["amount"], e["participants"], e.get("note", ""))
-            elif e.get("kind") == "settlement":
-                ledger.add_settlement(e["payer"], e["receiver"], e["amount"])
             else:
-                raise TallyError(f"unknown entry kind {e.get('kind')!r} in the ledger file")
+                ledger.add_settlement(e["payer"], e["receiver"], e["amount"])
         return ledger
+
+
+# The fields each entry kind can't be read without; "note" is optional and defaults to "".
+_NEEDS = {"expense": ("payer", "amount", "participants"), "settlement": ("payer", "receiver", "amount")}
+
+
+def _check_fields(entry: dict, label: str, needs: tuple[str, ...]) -> None:
+    """Raise TallyError naming `label` (its position, from 1) and every needed field it lacks."""
+    missing = [f for f in needs if f not in entry]
+    if missing:
+        raise TallyError(f"{label} is missing " + ", ".join(f'"{f}"' for f in missing))
+
+
+def _json_type(value: object) -> str:
+    """The JSON name for what json.loads gave, for an error message: 'a list', 'a string', ..."""
+    if value is None:
+        return "null"
+    if isinstance(value, bool):  # before int: bool is a subclass of int
+        return "true or false"
+    if isinstance(value, (int, float)):
+        return "a number"
+    return {list: "a list", str: "a string"}.get(type(value), type(value).__name__)
