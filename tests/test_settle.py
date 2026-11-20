@@ -138,3 +138,22 @@ def test_exact_limit_boundary(nonzero, exact):
     assert uses_exact(balances) is exact
     if not exact:
         assert settle_up(balances) == _greedy(balances)
+
+
+def test_settle_up_uses_greedy_at_13_members_where_exact_would_differ():
+    # Pins the dispatch in settle_up itself, not just uses_exact(): at exactly 13 members with a non-zero
+    # balance, settle_up must return the greedy payments. The members split into five zero-sum groups
+    # ({A, D, E}, {B, C}, {F, I, J}, {G, H}, {K, L, M}), so the exact method needs 13 - 5 = 8 payments;
+    # greedy pays across those groups and needs 10. If settle_up ran the exact method here, the result
+    # would observably change.
+    balances = {
+        "A": 500, "B": 400, "C": -400, "D": -300, "E": -200,
+        "F": 5000, "G": 4000, "H": -4000, "I": -3000, "J": -2000,
+        "K": 70000, "L": -60000, "M": -10000,
+    }
+    assert sum(1 for v in balances.values() if v) == EXACT_LIMIT + 1
+    assert not uses_exact(balances)
+    payments = settle_up(balances)
+    assert payments == _greedy(balances)
+    assert len(payments) == 10  # the exact minimum is 8
+    assert all(v == 0 for v in apply(balances, payments).values())
