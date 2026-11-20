@@ -98,7 +98,7 @@ def test_exact_matches_brute_force_minimum(seed):
 
 
 def test_exact_beats_greedy_when_a_smaller_group_clears_itself():
-    # {A, D, E} and {B, C} each sum to 0, so 2 + 1 = 3 payments suffice; greedy needs 4 (D-6, PR decision log).
+    # {A, D, E} and {B, C} each sum to 0, so 2 + 1 = 3 payments suffice; greedy needs 4. Replaces the ticket's {+5, -5, +3, -3} example, where greedy is already minimal.
     balances = {"A": 500, "B": 400, "C": -400, "D": -300, "E": -200}
     exact = settle_up(balances)
     assert len(exact) == 3
