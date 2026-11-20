@@ -7,6 +7,10 @@ from dataclasses import dataclass, field
 
 AMOUNT = re.compile(r"^\d+(\.\d{1,2})?$")
 
+# The ledger file format written by to_dict. A file without "version" is v0.1 and is read forever (D-2);
+# any other value is refused rather than guessed (D-11).
+FORMAT_VERSION = 2
+
 
 class TallyError(ValueError):
     """Invalid input; nothing was recorded (spec rule 4)."""
@@ -36,7 +40,12 @@ class Expense:
 @dataclass
 class Ledger:
     members: dict[str, str] = field(default_factory=dict)  # key -> name as first added
-    expenses: list[Expense] = field(default_factory=list)
+    entries: list[Expense] = field(default_factory=list)  # the one owner of recorded order (ADR 0003)
+
+    @property
+    def expenses(self) -> list[Expense]:
+        """Read-only view: the expenses among the entries, in recorded order. Record with add_expense."""
+        return [e for e in self.entries if isinstance(e, Expense)]
 
     def add_member(self, name: str) -> None:
         if not name.strip():
@@ -58,7 +67,7 @@ class Ledger:
         if len(set(among)) != len(among):
             raise TallyError("a participant is listed twice")
         expense = Expense(who, amount, among, note)
-        self.expenses.append(expense)
+        self.entries.append(expense)
         return expense
 
     @staticmethod
@@ -79,16 +88,36 @@ class Ledger:
     # --- storage -----------------------------------------------------------------
 
     def to_dict(self) -> dict:
-        return {"members": list(self.members.values()),
-                "expenses": [{"payer": self.members[e.payer], "amount": e.amount,
-                              "participants": [self.members[p] for p in e.participants], "note": e.note}
-                             for e in self.expenses]}
+        return {"version": FORMAT_VERSION,
+                "members": list(self.members.values()),
+                "entries": [self._entry_to_dict(e) for e in self.entries]}
+
+    def _entry_to_dict(self, e: Expense) -> dict:
+        return {"kind": "expense", "payer": self.members[e.payer], "amount": e.amount,
+                "participants": [self.members[p] for p in e.participants], "note": e.note}
 
     @classmethod
     def from_dict(cls, data: dict) -> "Ledger":
+        """Read a v0.1 file (no "version", an "expenses" list) or a version 2 file; refuse anything else.
+
+        Every entry goes through add_member / add_expense, so a file gets the same validation as the CLI.
+        """
+        if "version" not in data:  # v0.1: each expense becomes an entry of kind "expense", same order
+            entries = [{"kind": "expense", **e} for e in data.get("expenses", [])]
+        else:
+            version = data["version"]
+            # `type(...) is int` because True == 1 and isinstance(True, int): a bool is not a version.
+            if type(version) is int and version > FORMAT_VERSION:
+                raise TallyError(f"ledger version {version} is newer than this tally supports ({FORMAT_VERSION})")
+            if type(version) is not int or version != FORMAT_VERSION:
+                raise TallyError(f"unsupported ledger version {version!r} (this tally reads {FORMAT_VERSION}, "
+                                 "or a file with no version)")
+            entries = data.get("entries", [])
         ledger = cls()
         for name in data.get("members", []):
             ledger.add_member(name)
-        for e in data.get("expenses", []):
+        for e in entries:
+            if e.get("kind") != "expense":
+                raise TallyError(f"unknown entry kind {e.get('kind')!r} in the ledger file")
             ledger.add_expense(e["payer"], e["amount"], e["participants"], e.get("note", ""))
         return ledger
