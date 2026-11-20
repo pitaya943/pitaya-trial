@@ -9,6 +9,7 @@ A map of the codebase, for orientation before changing it: the main modules, whe
 | --- | --- | --- |
 | ledger | `src/tally/ledger.py` | The domain: `Ledger` (members, expenses, balances), `Expense`, `parse_amount` (text to integer cents), `TallyError`, JSON round-trip via `to_dict`/`from_dict`. |
 | cli | `src/tally/cli.py` | `tally` command (`add-member`, `add-expense`, `balances`): loads the JSON ledger file, calls `Ledger`, saves it, formats cents for output. |
+| settle | `src/tally/settle.py` | Settle up (from M1): `settle_up(balances)` returns the payments that clear every balance; pure computation, no I/O. |
 | tests | `tests/` | `test_ledger.py` for the domain rules, `test_cli.py` for the commands end to end. |
 
 ## How the parts connect
