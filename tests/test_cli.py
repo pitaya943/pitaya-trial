@@ -172,8 +172,9 @@ def test_unknown_future_version_is_rejected_and_not_written(tmp_path, capsys):
             os.utime(path, ns=(1_000_000_000, 1_000_000_000))
             before, mtime = path.read_bytes(), path.stat().st_mtime_ns
             assert main(["--ledger", str(path), *command]) == 1, case
-            err = capsys.readouterr().err
-            assert err.startswith("error: "), case
-            assert f"version {version}" in err, case
+            # The whole stderr, not a fragment: "version 3" alone would also match the
+            # "unsupported ledger version 3" branch, so deleting the "newer" branch would go unnoticed.
+            expected = f"error: ledger version {version} is newer than this tally supports (2)\n"
+            assert capsys.readouterr().err == expected, case
             assert path.read_bytes() == before, case
             assert path.stat().st_mtime_ns == mtime, case

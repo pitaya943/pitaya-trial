@@ -86,11 +86,19 @@ def test_round_trip_keeps_entries_in_order():
 def test_unsupported_version_values():
     # Otherwise a valid v2 file, so the version alone decides. 1 and True must not be read as v0.1 or v2.
     # One test, not parametrized: the done-when check matches this exact JUnit name.
-    for version in (1, 0, "2", None, True):
+    # Whole messages, hard-coded: each must come from the "unsupported" branch, never the "newer" one,
+    # and "'2'" (a string) must stay distinguishable from 2.
+    tail = " (this tally reads 2, or a file with no version)"
+    cases = [(1, "unsupported ledger version 1" + tail),
+             (0, "unsupported ledger version 0" + tail),
+             ("2", "unsupported ledger version '2'" + tail),
+             (None, "unsupported ledger version None" + tail),
+             (True, "unsupported ledger version True" + tail)]
+    for version, message in cases:
         data = {"version": version, "members": ["Ana"], "entries": []}
         with pytest.raises(TallyError) as caught:
             Ledger.from_dict(data)
-        assert repr(version) in str(caught.value), version
+        assert str(caught.value) == message, version
 
 
 def test_unknown_entry_kind_is_rejected():
@@ -101,5 +109,6 @@ def test_unknown_entry_kind_is_rejected():
 
 def test_version_must_be_the_integer_2():
     # 2.0 == 2 in Python, so only a type check refuses it; D-11 accepts the integer 2 alone.
-    with pytest.raises(TallyError, match=r"2\.0"):
+    with pytest.raises(TallyError) as caught:
         Ledger.from_dict({"version": 2.0, "members": [], "entries": []})
+    assert str(caught.value) == "unsupported ledger version 2.0 (this tally reads 2, or a file with no version)"
