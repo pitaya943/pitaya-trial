@@ -37,3 +37,15 @@ def test_payments_clear_every_balance(seed):
     assert all(isinstance(p.amount, int) and p.amount > 0 for p in payments)
     nonzero = sum(1 for v in balances.values() if v != 0)
     assert len(payments) <= max(nonzero - 1, 0)
+
+
+@pytest.mark.parametrize("seed", range(50))
+def test_same_balances_give_same_payments(seed):
+    balances = random_balances(random.Random(seed))
+    assert settle_up(balances) == settle_up(dict(balances))
+
+
+def test_ties_go_to_the_member_added_first():
+    # Ana and Bo owe the same; Cy and Di are owed the same. Member order decides who goes first.
+    balances = {"Di": 500, "Ana": -500, "Cy": 500, "Bo": -500}
+    assert settle_up(balances) == [Payment("Ana", "Di", 500), Payment("Bo", "Cy", 500)]
