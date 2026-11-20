@@ -1,4 +1,4 @@
-"""Command-line front end: tally add-member | add-expense | balances, on a JSON ledger file."""
+"""Command-line front end: tally add-member | add-expense | balances | settle-up, on a JSON ledger file."""
 
 from __future__ import annotations
 
@@ -8,6 +8,7 @@ import sys
 from pathlib import Path
 
 from .ledger import Ledger, TallyError, parse_amount
+from .settle import settle_up
 
 
 def load(path: Path) -> Ledger:
@@ -34,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     exp.add_argument("--among", nargs="+", help="participants (default: everyone)")
     exp.add_argument("--note", default="")
     sub.add_parser("balances")
+    sub.add_parser("settle-up", help="list payments that would clear every balance (writes nothing)")
     args = parser.parse_args(argv)
 
     try:
@@ -42,9 +44,16 @@ def main(argv: list[str] | None = None) -> int:
             ledger.add_member(args.name)
         elif args.command == "add-expense":
             ledger.add_expense(args.payer, parse_amount(args.amount), args.among, args.note)
-        else:
+        elif args.command == "balances":
             for name, value in ledger.balances().items():
                 print(f"{name}\t{cents(value)}")
+            return 0
+        else:  # settle-up: read only, so it returns before save()
+            payments = settle_up(ledger.balances())
+            for p in payments:
+                print(f"{p.payer}\t{p.receiver}\t{cents(p.amount)}")
+            if payments:
+                print("note: greedy method; this may not be the minimum number of payments", file=sys.stderr)
             return 0
         save(ledger, args.ledger)
     except TallyError as exc:
