@@ -70,9 +70,12 @@ def test_failed_save_leaves_the_old_file_intact(tmp_path, monkeypatch):
     before = path.read_bytes()
 
     _fail_writes_in(tmp_path, monkeypatch)
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as raised:
         save(_ledger("Ana", "Bo", "Cy"), path)
     monkeypatch.undo()
+
+    # The injected fault itself must come out, not some other OSError that save raised in its place.
+    assert (raised.value.errno, raised.value.strerror) == (28, "No space left on device")
 
     assert path.read_bytes() == before
     assert sorted(p.name for p in tmp_path.iterdir()) == ["tally.json"]
