@@ -1,0 +1,60 @@
+{
+  "members": [
+    "Ana",
+    "bo",
+    "Cy",
+    "DeeDee"
+  ],
+  "expenses": [
+    {
+      "payer": "Ana",
+      "amount": 1000,
+      "participants": [
+        "Ana",
+        "bo",
+        "Cy",
+        "DeeDee"
+      ],
+      "note": "taxi from airport"
+    },
+    {
+      "payer": "bo",
+      "amount": 7,
+      "participants": [
+        "Cy",
+        "Ana",
+        "bo"
+      ],
+      "note": ""
+    },
+    {
+      "payer": "Cy",
+      "amount": 2501,
+      "participants": [
+        "DeeDee",
+        "Cy"
+      ],
+      "note": "dinner, 2 of us"
+    },
+    {
+      "payer": "DeeDee",
+      "amount": 333,
+      "participants": [
+        "bo",
+        "Ana"
+      ],
+      "note": ""
+    },
+    {
+      "payer": "Ana",
+      "amount": 10000,
+      "participants": [
+        "Ana",
+        "bo",
+        "Cy",
+        "DeeDee"
+      ],
+      "note": "cabin deposit"
+    }
+  ]
+}
