@@ -1,3 +1,8 @@
+import json
+import os
+import shutil
+from pathlib import Path
+
 import pytest
 
 from tally.cli import main
@@ -97,3 +102,79 @@ def test_cli_settle_up_note_at_the_limit(tmp_path, capsys, members, note):
     assert main(ledger + ["settle-up"]) == 0
     expected = "note: greedy method; this may not be the minimum number of payments\n" if note else ""
     assert capsys.readouterr().err == expected
+
+
+# --- ledger file format (T-003) ---------------------------------------------------
+
+FIXTURE = Path(__file__).parent / "fixtures" / "v0.1.json"
+# Printed by the v0.1 `tally balances` on the fixture when it was generated. Hard-coded on purpose:
+# recomputing them with the current code could not catch a change in how old files are read (learning 1).
+V01_BALANCES = "Ana\t80.82\nbo\t-29.12\nCy\t-15.02\nDeeDee\t-36.68\n"
+
+
+def test_v01_fixture_loads_with_the_same_balances(capsys):
+    assert main(["--ledger", str(FIXTURE), "balances"]) == 0
+    assert capsys.readouterr().out == V01_BALANCES
+
+
+def _copy_of_fixture(tmp_path):
+    """A copy of the fixture with an old mtime, so a rewrite shows up even on a coarse clock."""
+    path = tmp_path / "v01.json"
+    shutil.copyfile(FIXTURE, path)
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+    return path
+
+
+def test_cli_writes_version_2(tmp_path):
+    path, ledger = _group(tmp_path)
+    data = json.loads(path.read_text())
+    assert data["version"] == 2
+    assert "expenses" not in data
+    assert [e["kind"] for e in data["entries"]] == ["expense", "expense"]
+    assert [(e["payer"], e["amount"]) for e in data["entries"]] == [("Ana", 3000), ("Bo", 600)]
+
+
+def test_read_only_commands_do_not_upgrade_a_v01_file(tmp_path, capsys):
+    # Any write would change the bytes: the v2 writer adds "version" and renames "expenses".
+    path = _copy_of_fixture(tmp_path)
+    before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+    for command in ("balances", "settle-up"):
+        assert main(["--ledger", str(path), command]) == 0
+        assert path.read_bytes() == before
+        assert path.stat().st_mtime_ns == mtime
+    assert capsys.readouterr().out.startswith(V01_BALANCES)
+
+
+def test_v01_file_is_written_as_version_2_on_save(tmp_path, capsys):
+    path = _copy_of_fixture(tmp_path)
+    assert main(["--ledger", str(path), "add-member", "Dee"]) == 0
+    data = json.loads(path.read_text())
+    assert data["version"] == 2
+    assert "expenses" not in data
+    old = json.loads(FIXTURE.read_text())["expenses"]
+    assert data["entries"] == [{"kind": "expense", **e} for e in old]  # same expenses, same order
+    capsys.readouterr()
+    assert main(["--ledger", str(path), "balances"]) == 0
+    assert capsys.readouterr().out == V01_BALANCES + "Dee\t0.00\n"
+
+
+COMMANDS = [["add-member", "Dee"], ["add-expense", "Ana", "1.00"], ["balances"], ["settle-up"]]
+
+
+def test_unknown_future_version_is_rejected_and_not_written(tmp_path, capsys):
+    # One test, not parametrized: the done-when check matches this exact JUnit name.
+    for version in (3, 99):
+        for command in COMMANDS:
+            case = f"version {version}, {command[0]}"
+            # Hand-formatted (one line), so a stray save() would reformat it even if the content matched.
+            path = tmp_path / f"v{version}-{command[0]}.json"
+            path.write_text(f'{{"version": {version}, "members": ["Ana", "Bo"], "entries": []}}')
+            os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+            before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+            assert main(["--ledger", str(path), *command]) == 1, case
+            # The whole stderr, not a fragment: "version 3" alone would also match the
+            # "unsupported ledger version 3" branch, so deleting the "newer" branch would go unnoticed.
+            expected = f"error: ledger version {version} is newer than this tally supports (2)\n"
+            assert capsys.readouterr().err == expected, case
+            assert path.read_bytes() == before, case
+            assert path.stat().st_mtime_ns == mtime, case
