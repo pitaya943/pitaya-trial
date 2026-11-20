@@ -83,13 +83,14 @@ def test_round_trip_keeps_entries_in_order():
     assert again.to_dict() == data
 
 
-@pytest.mark.parametrize("version", [1, 0, "2", None, True], ids=repr)
-def test_unsupported_version_values(version):
+def test_unsupported_version_values():
     # Otherwise a valid v2 file, so the version alone decides. 1 and True must not be read as v0.1 or v2.
-    data = {"version": version, "members": ["Ana"], "entries": []}
-    with pytest.raises(TallyError) as caught:
-        Ledger.from_dict(data)
-    assert repr(version) in str(caught.value)
+    # One test, not parametrized: the done-when check matches this exact JUnit name.
+    for version in (1, 0, "2", None, True):
+        data = {"version": version, "members": ["Ana"], "entries": []}
+        with pytest.raises(TallyError) as caught:
+            Ledger.from_dict(data)
+        assert repr(version) in str(caught.value), version
 
 
 def test_unknown_entry_kind_is_rejected():

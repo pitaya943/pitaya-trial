@@ -161,17 +161,19 @@ def test_v01_file_is_written_as_version_2_on_save(tmp_path, capsys):
 COMMANDS = [["add-member", "Dee"], ["add-expense", "Ana", "1.00"], ["balances"], ["settle-up"]]
 
 
-@pytest.mark.parametrize("version", [3, 99])
-@pytest.mark.parametrize("command", COMMANDS, ids=lambda c: c[0])
-def test_unknown_future_version_is_rejected_and_not_written(tmp_path, capsys, version, command):
-    # Hand-formatted (one line), so a stray save() would reformat it even if the content matched.
-    path = tmp_path / "t.json"
-    path.write_text(f'{{"version": {version}, "members": ["Ana", "Bo"], "entries": []}}')
-    os.utime(path, ns=(1_000_000_000, 1_000_000_000))
-    before, mtime = path.read_bytes(), path.stat().st_mtime_ns
-    assert main(["--ledger", str(path), *command]) == 1
-    err = capsys.readouterr().err
-    assert err.startswith("error: ")
-    assert f"version {version}" in err
-    assert path.read_bytes() == before
-    assert path.stat().st_mtime_ns == mtime
+def test_unknown_future_version_is_rejected_and_not_written(tmp_path, capsys):
+    # One test, not parametrized: the done-when check matches this exact JUnit name.
+    for version in (3, 99):
+        for command in COMMANDS:
+            case = f"version {version}, {command[0]}"
+            # Hand-formatted (one line), so a stray save() would reformat it even if the content matched.
+            path = tmp_path / f"v{version}-{command[0]}.json"
+            path.write_text(f'{{"version": {version}, "members": ["Ana", "Bo"], "entries": []}}')
+            os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+            before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+            assert main(["--ledger", str(path), *command]) == 1, case
+            err = capsys.readouterr().err
+            assert err.startswith("error: "), case
+            assert f"version {version}" in err, case
+            assert path.read_bytes() == before, case
+            assert path.stat().st_mtime_ns == mtime, case
