@@ -157,3 +157,38 @@ def test_settle_up_uses_greedy_at_13_members_where_exact_would_differ():
     assert payments == _greedy(balances)
     assert len(payments) == 10  # the exact minimum is 8
     assert all(v == 0 for v in apply(balances, payments).values())
+
+
+# --- recording settle up as settlements (T-005) ------------------------------------------
+
+
+def random_ledger(rng: random.Random):
+    """A real Ledger with random expenses: subsets of participants and remainder cents included.
+
+    One in three ledgers has 13 to 20 members, so the greedy path (more than EXACT_LIMIT members with a
+    non-zero balance) is covered as well as the exact one.
+    """
+    from tally import Ledger
+
+    ledger = Ledger()
+    n = rng.randint(13, 20) if rng.random() < 1 / 3 else rng.randint(2, 12)
+    names = [f"M{i}" for i in range(n)]
+    for name in names:
+        ledger.add_member(name)
+    for _ in range(rng.randint(1, 3 * n)):
+        among = rng.sample(names, rng.randint(1, n)) if rng.random() < 0.5 else None
+        ledger.add_expense(rng.choice(names), rng.randint(1, 50_000), among)
+    return ledger
+
+
+def test_recording_settle_up_clears_every_balance():
+    # S-4, D-5. One test, not parametrized: the done-when check matches this exact JUnit name.
+    seeds, greedy = 400, 0
+    for seed in range(seeds):
+        ledger = random_ledger(random.Random(seed))
+        balances = ledger.balances()
+        greedy += not uses_exact(balances)
+        for p in settle_up(balances):
+            ledger.add_settlement(p.payer, p.receiver, p.amount)
+        assert all(v == 0 for v in ledger.balances().values()), f"seed {seed}"
+    assert greedy >= 50, greedy  # the 13+ member ledgers really took the greedy path
