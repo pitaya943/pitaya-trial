@@ -229,3 +229,70 @@ def test_cli_settling_every_settle_up_payment_clears_balances(tmp_path, capsys):
     assert capsys.readouterr().out == "Ana\t0.00\nBo\t0.00\nCy\t0.00\n"
     assert main(ledger + ["settle-up"]) == 0
     assert capsys.readouterr().out == ""
+
+
+# --- malformed ledger files (T-006) --------------------------------------------------
+
+EVERY_COMMAND = [["balances"], ["settle-up"], ["add-member", "Dee"], ["add-expense", "Ana", "1.00"],
+                 ["settle", "Bo", "Ana", "1.00"]]
+
+
+def _refused_untouched(path, text, capsys, expected_err):
+    """Run every command on a file holding `text`; each must exit 1 with exactly `expected_err`
+    on stderr (one line, so no traceback) and leave the file's bytes and mtime as they were."""
+    for command in EVERY_COMMAND:
+        case = (text, command[0])
+        # Hand-formatted (one line, no trailing newline) and an old mtime, so a stray save()
+        # would show in the bytes even if it wrote the same content.
+        path.write_text(text)
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+        assert main(["--ledger", str(path), *command]) == 1, case
+        out = capsys.readouterr()
+        assert out.err == expected_err, case
+        assert out.out == "", case
+        assert path.read_bytes() == before, case
+        assert path.stat().st_mtime_ns == mtime, case
+
+
+def test_v2_file_without_entries_is_refused(tmp_path, capsys):
+    # S-16. One test, not parametrized: the done-when check matches this exact JUnit name.
+    # With T-003's reader each of these loaded as an empty ledger and the next save erased the expense.
+    expense = '{"payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"], "note": ""}'
+    texts = [f'{{"version": 2, "members": ["Ana", "Bo"], "expenses": [{expense}]}}',  # leftover v0.1 key
+             '{"version": 2, "members": ["Ana", "Bo"]}',                              # no list at all
+             '{"version": 2, "members": ["Ana", "Bo"], "entries": null}',             # not a list either
+             f'{{"version": 2, "members": ["Ana", "Bo"], "entries": {expense}}}']
+    for text in texts:
+        _refused_untouched(tmp_path / "t.json", text, capsys,
+                           'error: ledger version 2 needs an "entries" list\n')
+
+
+def test_entries_without_version_is_refused(tmp_path, capsys):
+    # S-17. A version 2 body without its version line: read as v0.1 it would have zero expenses,
+    # and the next save would write it out empty.
+    entry = '{"kind": "expense", "payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"], "note": ""}'
+    for text in (f'{{"members": ["Ana", "Bo"], "entries": [{entry}]}}',
+                 '{"members": ["Ana", "Bo"], "entries": []}'):
+        _refused_untouched(tmp_path / "t.json", text, capsys,
+                           'error: ledger file has "entries" but no "version"\n')
+
+
+def test_unreadable_or_non_object_file_is_refused(tmp_path, capsys):
+    # S-18. Whole stderr: one "error: " line and nothing else, so a traceback can't hide in it.
+    cases = [('{"members": [', "ledger file is not valid JSON: Expecting value at line 1, column 14"),
+             ("", "ledger file is not valid JSON: Expecting value at line 1, column 1"),
+             ('{"members": ["Ana"]} x', "ledger file is not valid JSON: Extra data at line 1, column 22"),
+             ("[]", "ledger file must be a JSON object, not a list"),
+             ('"x"', "ledger file must be a JSON object, not a string"),
+             ("3", "ledger file must be a JSON object, not a number"),
+             ("null", "ledger file must be a JSON object, not null")]
+    for text, message in cases:
+        _refused_untouched(tmp_path / "t.json", text, capsys, f"error: {message}\n")
+    # Bytes that aren't UTF-8 text at all are refused the same way, not with a UnicodeDecodeError.
+    path = tmp_path / "bin.json"
+    path.write_bytes(b'{"members": ["\xff"]}')
+    before = path.read_bytes()
+    assert main(["--ledger", str(path), "add-member", "Dee"]) == 1
+    assert capsys.readouterr().err == "error: ledger file is not UTF-8 text\n"
+    assert path.read_bytes() == before

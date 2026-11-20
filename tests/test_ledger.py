@@ -191,3 +191,43 @@ def test_round_trip_keeps_settlements_among_expenses():
     assert again.entries == ledger.entries
     assert again.balances() == ledger.balances() == {"Ana": 850, "Bo": 0, "Cy": -850}
     assert again.to_dict() == data
+
+
+# --- malformed entries (T-006) -----------------------------------------------------
+
+
+def test_malformed_entries_are_refused():
+    # S-19. One test, not parametrized: the done-when check matches this exact JUnit name.
+    # Each bad entry sits second, after a good one, so a message counting from 0 (or naming the
+    # wrong entry) differs from the expected one; whole messages, compared exactly.
+    good_expense = {"kind": "expense", "payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"], "note": ""}
+    expense = {k: v for k, v in good_expense.items() if k != "kind"}
+    settlement = {"kind": "settlement", "payer": "Bo", "receiver": "Ana", "amount": 500}
+
+    def without(entry, *fields):
+        return {k: v for k, v in entry.items() if k not in fields}
+
+    v2 = [("x", "entry 2 is not an object"),
+          (["Ana"], "entry 2 is not an object"),
+          (without(good_expense, "payer"), 'entry 2 (expense) is missing "payer"'),
+          (without(good_expense, "amount"), 'entry 2 (expense) is missing "amount"'),
+          (without(good_expense, "participants"), 'entry 2 (expense) is missing "participants"'),
+          (without(good_expense, "payer", "participants"), 'entry 2 (expense) is missing "payer", "participants"'),
+          (without(settlement, "payer"), 'entry 2 (settlement) is missing "payer"'),
+          (without(settlement, "receiver"), 'entry 2 (settlement) is missing "receiver"'),
+          (without(settlement, "amount"), 'entry 2 (settlement) is missing "amount"'),
+          (without(good_expense, "kind"), "entry 2 has unknown kind None")]
+    v01 = [(7, "expense 2 is not an object"),
+           (without(expense, "payer"), 'expense 2 is missing "payer"'),
+           (without(expense, "amount"), 'expense 2 is missing "amount"'),
+           (without(expense, "participants"), 'expense 2 is missing "participants"')]
+    files = ([({"version": 2, "members": ["Ana", "Bo"], "entries": [good_expense, bad]}, m) for bad, m in v2]
+             + [({"members": ["Ana", "Bo"], "expenses": [expense, bad]}, m) for bad, m in v01]
+             + [({"members": ["Ana"], "expenses": "x"}, 'a ledger file with no "version" needs an "expenses" list')])
+    for data, message in files:
+        with pytest.raises(TallyError) as caught:
+            Ledger.from_dict(data)
+        assert str(caught.value) == message, data
+    # A note stays optional: the same entries without one are read, so the check names only needed fields.
+    ok = Ledger.from_dict({"members": ["Ana", "Bo"], "expenses": [without(expense, "note")]})
+    assert ok.balances() == {"Ana": 500, "Bo": -500}
