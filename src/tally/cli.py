@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import stat
 import sys
+import tempfile
 from pathlib import Path
 
 from .ledger import Ledger, TallyError, parse_amount
@@ -16,7 +19,26 @@ def load(path: Path) -> Ledger:
 
 
 def save(ledger: Ledger, path: Path) -> None:
-    path.write_text(json.dumps(ledger.to_dict(), indent=2) + "\n")
+    """Write the ledger atomically: a temp file in the same directory, renamed over `path`.
+
+    Readers see either the old file or the new one, never a partial write. The temp file sits
+    next to the ledger because `os.replace` is only atomic within one filesystem. On any error
+    the temp file is removed and the error re-raised, so the old ledger stays as it was.
+    """
+    text = json.dumps(ledger.to_dict(), indent=2) + "\n"
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())  # the data is on disk before the rename makes it the ledger
+        if path.exists():
+            # mkstemp creates the file 0o600; keep the permission bits the ledger already had.
+            os.chmod(tmp, stat.S_IMODE(path.stat().st_mode))
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
 
 
 def cents(value: int) -> str:
