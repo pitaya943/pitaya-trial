@@ -8,7 +8,7 @@ import sys
 from pathlib import Path
 
 from .ledger import Ledger, TallyError, parse_amount
-from .settle import settle_up
+from .settle import settle_up, uses_exact
 
 
 def load(path: Path) -> Ledger:
@@ -49,10 +49,11 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{name}\t{cents(value)}")
             return 0
         else:  # settle-up: read only, so it returns before save()
-            payments = settle_up(ledger.balances())
+            balances = ledger.balances()
+            payments = settle_up(balances)
             for p in payments:
                 print(f"{p.payer}\t{p.receiver}\t{cents(p.amount)}")
-            if payments:
+            if payments and not uses_exact(balances):
                 print("note: greedy method; this may not be the minimum number of payments", file=sys.stderr)
             return 0
         save(ledger, args.ledger)
