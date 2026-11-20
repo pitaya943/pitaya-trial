@@ -2,7 +2,7 @@
 
 # M2 design: Settlements and a versioned file format
 
-Status: draft, waiting for the Owner. The chosen shape and the open questions below are recommendations, not decisions.
+Status: agreed by the Owner on 2026-11-20 (D-10 to D-13, [ADR 0003](../adr/0003-one-ordered-entries-list.md)). Tickets: T-003, T-004, T-005.
 
 ## Scenarios
 
@@ -20,12 +20,13 @@ Example group used below (`_group` in `tests/test_cli.py`): Ana pays 30.00 for A
 | S-8 | A copy of the v0.1 fixture | `balances` and `settle-up` (read-only) | The file's bytes and mtime are unchanged: upgrade happens only on save | `tests/test_cli.py::test_read_only_commands_do_not_upgrade_a_v01_file` |
 | S-9 | A copy of the v0.1 fixture | A command that saves (`add-member Dee`) | The file now has `"version": 2`; the old members' balances are identical; the expenses are kept in order | `tests/test_cli.py::test_v01_file_is_written_as_version_2_on_save` |
 | S-10 | A file with `"version": 3` (and `99`) | Any command, read-only or saving | `TallyError` whose message names the version (e.g. "ledger version 3 is newer than this tally supports (2)"); exit 1; bytes and mtime unchanged | `tests/test_cli.py::test_unknown_future_version_is_rejected_and_not_written` |
-| S-11 | A file with `"version"` set to something that is neither absent nor a known integer (see open question 2) | Any command | As in open question 2 | `tests/test_ledger.py::test_unsupported_version_values` |
-| S-12 | A saved ledger file | Save fails part-way through the write (the test makes the temp-file write emit half the bytes, then raise `OSError`) | The original file's bytes are intact and no temp file is left in the directory. The current `path.write_text` would truncate the original, so this test goes red first | `tests/test_cli.py::test_failed_save_leaves_the_old_file_intact` |
-| S-13 | A saved ledger file; a fresh path with no file | A normal save | The file holds the full new content, its permission bits are preserved (existing file) and no temp file is left behind | `tests/test_cli.py::test_save_replaces_the_file_and_leaves_no_temp_file` |
+| S-11 | A file whose `"version"` is neither absent nor the integer 2: `1`, `0`, `"2"`, `null`, `true` (D-11) | `Ledger.from_dict` | `TallyError` whose message names the value (`true` is not taken as 1); nothing is guessed | `tests/test_ledger.py::test_unsupported_version_values` |
+| S-12 | A saved ledger file | Save fails part-way through the write (the test makes the temp-file write emit half the bytes, then raise `OSError`) | The original file's bytes are intact and no temp file is left in the directory. The current `path.write_text` would truncate the original, so this test goes red first | `tests/test_save.py::test_failed_save_leaves_the_old_file_intact` |
+| S-13 | A saved ledger file; a fresh path with no file | A normal save | The file holds the full new content, its permission bits are preserved (existing file) and no temp file is left behind | `tests/test_save.py::test_save_replaces_the_file_and_leaves_no_temp_file` |
 | S-14 | The whole repository | `.venv/bin/python -m pytest -q` | Passes locally and in CI | the test command |
+| S-15 | Ana 17.00, Bo −7.00 (example group) | `add_settlement("Bo", "Ana", 1000)`: more than Bo owes (D-12) | Recorded: Bo +3.00, Ana 7.00; balances still sum to 0 | `tests/test_ledger.py::test_overpaying_settlement_is_recorded` |
 
-Exit criteria coverage: 1 → S-1, S-2, S-3; 2 → S-4, S-5; 3 → S-6, S-7, S-8, S-9; 4 → S-10, S-11; 5 → S-12, S-13; 6 → S-14.
+Exit criteria coverage: 1 → S-1, S-2, S-3, S-15; 2 → S-4, S-5; 3 → S-6, S-7, S-8, S-9; 4 → S-10, S-11; 5 → S-12, S-13; 6 → S-14.
 
 ## Interfaces
 
@@ -112,19 +113,25 @@ None. Errors go to stderr as `error: <message>` as today.
 2. **B — one ordered list of entries with a `kind`.** `Ledger.entries` holds expenses and settlements in recorded order; `expenses` and `settlements` are read-only views. The upgrade renames `expenses` to `entries` and adds `kind`, which is a bigger change to guard (S-7, S-9), but recorded order has one owner from now on, and M4 can add ids without changing the shape again.
 3. (Rejected early) **Settlement as an expense** paid by the payer among `[receiver]`. `balances()` would be right with no new code, but it breaks the glossary (a settlement is not an expense), and M4's history and `kind` could not tell them apart without a flag, so it is A or B in disguise.
 
-**Recommended:** B, because recorded order gets one owner now and M4 needs no second format change; the extra upgrade risk is exactly what exit criteria 3 and 5 already guard. If chosen, it gets an ADR (it changes the data model and two real options were weighed) and a decision row.
+**Chosen:** B (D-10, ADR 0003), because recorded order gets one owner now and M4 needs no second format change; the extra upgrade risk is exactly what exit criteria 3 and 5 already guard.
 
 ## Open questions
 
-1. **Shape A or B** (the milestone's own open question). Recommendation: B. A is safer for M2 alone but costs a second format change in M4.
-2. **Version values that are not "future"** (`1`, `0`, `"2"`, `null`, `true`). Options: (a) reject everything except "absent" and the integer `2`, naming the value; (b) treat only integers greater than 2 as errors and the rest as v0.1. Recommendation: (a). Version 1 never existed, and guessing risks misreading a file, which is what D-2 is meant to prevent.
-3. **Overpaying.** Can a settlement be larger than what the payer owes (their balance flips sign)? Options: (a) allow it, since it records something that happened in real life; (b) reject it. Recommendation: (a). The milestone doesn't ask for a limit, and (b) would make the order in which you record things matter.
-4. **A save that fails with `OSError`.** Today it ends in a traceback. Options: (a) leave it as is (M2 only promises the old file stays intact); (b) catch it in `cli` and print `error: could not save <path>: ...`, exit 1. Recommendation: (a) for M2, to stay in scope.
+None left. The Owner decided them on 2026-11-20:
+
+1. Shape B, one ordered `entries` list (D-10, ADR 0003).
+2. A `version` that is neither absent nor the integer 2 is rejected, naming the value (D-11).
+3. A settlement may be larger than what the payer owes (D-12).
+4. A save that fails with `OSError` still ends in a traceback in M2; only the old file's safety is promised (D-13).
 
 Known limits, not addressed (say if you want them): saving through a symlink replaces the link with a regular file; two `tally` processes saving at once can lose one write (last rename wins); on some network filesystems `os.replace` is not atomic.
 
-## Proposed ticket cut (for the plan PR, after the Owner agrees)
+## Ticket cut
 
-- **T-003 Versioned format** (S-6–S-11): first commit the v0.1 fixture, generated by the current code, together with its expected balances; then add `version`, the v0.1 → v2 mapping, and rejection. Scope: `src/tally/ledger.py`, `tests/test_ledger.py`, `tests/test_cli.py`, `tests/fixtures/v0.1.json`. Risk: high (sensitive area: file format).
-- **T-004 Atomic save** (S-12, S-13): scope `src/tally/cli.py`, `tests/test_cli.py`. Can run in parallel with T-003.
-- **T-005 Settlements** (S-1–S-5): blocked by T-003. Scope: `src/tally/ledger.py`, `src/tally/cli.py`, `tests/test_ledger.py`, `tests/test_cli.py`, `tests/test_settle.py`. Risk: high (sensitive area: money and balances).
+| Ticket | Scenarios | Depends on | Parallel with |
+| --- | --- | --- | --- |
+| T-003 Versioned ledger file format | S-6, S-7, S-8, S-9, S-10, S-11 | none | T-004 |
+| T-004 Atomic save | S-12, S-13 | none | T-003 |
+| T-005 Record settlements | S-1, S-2, S-3, S-4, S-5, S-15 | T-003, T-004 | none |
+
+S-14 (the full test command) is a done-when condition of every ticket.
