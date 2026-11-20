@@ -1,4 +1,4 @@
-"""The ledger: members, expenses and balances. Money is always integer cents (spec rule 1)."""
+"""The ledger: members, expenses, settlements and balances. Money is always integer cents (spec rule 1)."""
 
 from __future__ import annotations
 
@@ -38,14 +38,27 @@ class Expense:
 
 
 @dataclass
+class Settlement:
+    """A recorded payment that pays back what the payer owes. Field names match settle.Payment."""
+    payer: str  # member key
+    receiver: str  # member key
+    amount: int  # cents, > 0
+
+
+@dataclass
 class Ledger:
     members: dict[str, str] = field(default_factory=dict)  # key -> name as first added
-    entries: list[Expense] = field(default_factory=list)  # the one owner of recorded order (ADR 0003)
+    entries: list[Expense | Settlement] = field(default_factory=list)  # the one owner of recorded order (ADR 0003)
 
     @property
     def expenses(self) -> list[Expense]:
         """Read-only view: the expenses among the entries, in recorded order. Record with add_expense."""
         return [e for e in self.entries if isinstance(e, Expense)]
+
+    @property
+    def settlements(self) -> list[Settlement]:
+        """Read-only view: the settlements among the entries, in recorded order. Record with add_settlement."""
+        return [e for e in self.entries if isinstance(e, Settlement)]
 
     def add_member(self, name: str) -> None:
         if not name.strip():
@@ -70,6 +83,20 @@ class Ledger:
         self.entries.append(expense)
         return expense
 
+    def add_settlement(self, payer: str, receiver: str, amount: int) -> Settlement:
+        """Record that `payer` paid `receiver` back `amount` cents. More than the payer owes is allowed (D-12)."""
+        # `type(...) is int`: a float like 1.234 is not cents, and a bool is not an amount.
+        if type(amount) is not int:
+            raise TallyError(f"a settlement is a whole number of cents, not {amount!r}")
+        if amount <= 0:
+            raise TallyError("a settlement must be more than 0")
+        who, to = self._member(payer), self._member(receiver)
+        if who == to:
+            raise TallyError(f"{self.members[who]!r} can't settle with themselves")
+        settlement = Settlement(who, to, amount)
+        self.entries.append(settlement)
+        return settlement
+
     @staticmethod
     def shares(expense: Expense) -> dict[str, int]:
         """Equal split; leftover cents go one each to participants in listed order."""
@@ -79,10 +106,15 @@ class Ledger:
     def balances(self) -> dict[str, int]:
         """Paid minus owed, per member, by display name. Always sums to 0 (spec rule 3)."""
         totals = {k: 0 for k in self.members}
-        for expense in self.expenses:
-            totals[expense.payer] += expense.amount
-            for member, share in self.shares(expense).items():
-                totals[member] -= share
+        for entry in self.entries:
+            # Paying raises the payer's balance either way; an expense's shares, or a settlement's
+            # receiver, take the same amount back off, which keeps the sum at 0.
+            totals[entry.payer] += entry.amount
+            if isinstance(entry, Settlement):
+                totals[entry.receiver] -= entry.amount
+            else:
+                for member, share in self.shares(entry).items():
+                    totals[member] -= share
         return {self.members[k]: v for k, v in totals.items()}
 
     # --- storage -----------------------------------------------------------------
@@ -92,7 +124,10 @@ class Ledger:
                 "members": list(self.members.values()),
                 "entries": [self._entry_to_dict(e) for e in self.entries]}
 
-    def _entry_to_dict(self, e: Expense) -> dict:
+    def _entry_to_dict(self, e: Expense | Settlement) -> dict:
+        if isinstance(e, Settlement):
+            return {"kind": "settlement", "payer": self.members[e.payer],
+                    "receiver": self.members[e.receiver], "amount": e.amount}
         return {"kind": "expense", "payer": self.members[e.payer], "amount": e.amount,
                 "participants": [self.members[p] for p in e.participants], "note": e.note}
 
@@ -117,7 +152,10 @@ class Ledger:
         for name in data.get("members", []):
             ledger.add_member(name)
         for e in entries:
-            if e.get("kind") != "expense":
+            if e.get("kind") == "expense":
+                ledger.add_expense(e["payer"], e["amount"], e["participants"], e.get("note", ""))
+            elif e.get("kind") == "settlement":
+                ledger.add_settlement(e["payer"], e["receiver"], e["amount"])
+            else:
                 raise TallyError(f"unknown entry kind {e.get('kind')!r} in the ledger file")
-            ledger.add_expense(e["payer"], e["amount"], e["participants"], e.get("note", ""))
         return ledger

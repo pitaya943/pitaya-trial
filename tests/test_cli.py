@@ -178,3 +178,54 @@ def test_unknown_future_version_is_rejected_and_not_written(tmp_path, capsys):
             assert capsys.readouterr().err == expected, case
             assert path.read_bytes() == before, case
             assert path.stat().st_mtime_ns == mtime, case
+
+
+# --- settle (T-005) ----------------------------------------------------------------
+
+
+def test_cli_settle_updates_balances(tmp_path, capsys):
+    # S-1. A sign-flipped settle gives Bo -14.00 and Ana 24.00.
+    _, ledger = _group(tmp_path)
+    assert main(ledger + ["settle", "Bo", "Ana", "7.00"]) == 0
+    capsys.readouterr()
+    assert main(ledger + ["balances"]) == 0
+    assert capsys.readouterr().out == "Ana\t10.00\nBo\t0.00\nCy\t-10.00\n"
+
+
+def test_cli_settle_errors_leave_the_file_unchanged(tmp_path, capsys):
+    # S-3. One test, not parametrized: the done-when check matches this exact JUnit name.
+    path, ledger = _group(tmp_path)
+    os.utime(path, ns=(1_000_000_000, 1_000_000_000))  # an old mtime, so any rewrite shows
+    before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+    cases = [
+        (["Dee", "Ana", "1.00"], "'Dee' is not a member"),
+        (["Ana", "Dee", "1.00"], "'Dee' is not a member"),
+        (["Ana", "Ana", "1.00"], "can't settle with themselves"),
+        (["ana", "Ana", "1.00"], "can't settle with themselves"),
+        (["Bo", "Ana", "0"], "a settlement must be more than 0"),
+        (["Bo", "Ana", "-1"], "not an amount: '-1'"),
+        (["Bo", "Ana", "1.234"], "not an amount: '1.234'"),
+    ]
+    for args, message in cases:
+        capsys.readouterr()
+        assert main(ledger + ["settle"] + args) == 1, args
+        err = capsys.readouterr().err
+        assert err.startswith("error: ") and message in err, (args, err)
+        assert path.read_bytes() == before, args
+        assert path.stat().st_mtime_ns == mtime, args
+
+
+def test_cli_settling_every_settle_up_payment_clears_balances(tmp_path, capsys):
+    # S-5: settle-up's output format fed back as settle's input, line by line.
+    _, ledger = _group(tmp_path)
+    capsys.readouterr()
+    assert main(ledger + ["settle-up"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines  # the example group is not settled yet
+    for line in lines:
+        assert main(ledger + ["settle"] + line.split("\t")) == 0, line
+    capsys.readouterr()
+    assert main(ledger + ["balances"]) == 0
+    assert capsys.readouterr().out == "Ana\t0.00\nBo\t0.00\nCy\t0.00\n"
+    assert main(ledger + ["settle-up"]) == 0
+    assert capsys.readouterr().out == ""

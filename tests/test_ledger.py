@@ -112,3 +112,82 @@ def test_version_must_be_the_integer_2():
     with pytest.raises(TallyError) as caught:
         Ledger.from_dict({"version": 2.0, "members": [], "entries": []})
     assert str(caught.value) == "unsupported ledger version 2.0 (this tally reads 2, or a file with no version)"
+
+
+# --- settlements (T-005) -----------------------------------------------------------
+
+
+def example_group():
+    """Ana pays 30.00 for three; Bo pays 6.00 for Ana and Bo. Balances: Ana 17.00, Bo -7.00, Cy -10.00."""
+    ledger = group("Ana", "Bo", "Cy")
+    ledger.add_expense("Ana", 3000)
+    ledger.add_expense("Bo", 600, ["Ana", "Bo"])
+    assert ledger.balances() == {"Ana": 1700, "Bo": -700, "Cy": -1000}
+    return ledger
+
+
+def test_settlement_moves_balances():
+    # S-2. An amount that is not either balance (and not 7.00, which would clear Bo and hide a wrong
+    # receiver): a sign flip, a wrong receiver or a settlement counted as an expense all give other numbers.
+    ledger = example_group()
+    before = ledger.balances()
+    ledger.add_settlement(" bo ", "ANA", 250)  # names trimmed and case-insensitive, like members
+    after = ledger.balances()
+    assert after == {"Ana": before["Ana"] - 250, "Bo": before["Bo"] + 250, "Cy": before["Cy"]}
+    assert after == {"Ana": 1450, "Bo": -450, "Cy": -1000}
+    assert sum(after.values()) == 0
+    # Stored by member key, with the same field names as settle.Payment.
+    from tally.ledger import Settlement
+    assert ledger.entries[-1] == Settlement("bo", "ana", 250)
+    assert ledger.settlements == [Settlement("bo", "ana", 250)]
+    # A second settlement in the other direction moves them again, by exactly its amount.
+    ledger.add_settlement("Cy", "Bo", 1)
+    assert ledger.balances() == {"Ana": 1450, "Bo": -451, "Cy": -999}
+    assert sum(ledger.balances().values()) == 0
+
+
+def test_invalid_settlements_record_nothing():
+    # S-3. One test, not parametrized: the done-when check matches this exact JUnit name.
+    cases = [
+        ("Dee", "Ana", 100, "'Dee' is not a member"),
+        ("Ana", "Dee", 100, "'Dee' is not a member"),
+        ("Ana", "Ana", 100, "can't settle with themselves"),
+        ("ana", "Ana", 100, "can't settle with themselves"),
+        ("Bo", "Ana", 0, "a settlement must be more than 0"),
+        ("Bo", "Ana", -1, "a settlement must be more than 0"),
+        ("Bo", "Ana", 1.234, "a settlement is a whole number of cents"),
+    ]
+    for payer, receiver, amount, message in cases:
+        ledger = group("Ana", "Bo")
+        ledger.add_expense("Ana", 1000)
+        entries, balances = list(ledger.entries), ledger.balances()
+        with pytest.raises(TallyError) as caught:
+            ledger.add_settlement(payer, receiver, amount)
+        assert message in str(caught.value), (payer, receiver, amount)
+        assert ledger.entries == entries, (payer, receiver, amount)
+        assert ledger.settlements == [], (payer, receiver, amount)
+        assert ledger.balances() == balances, (payer, receiver, amount)
+
+
+def test_overpaying_settlement_is_recorded():
+    # S-15, D-12: paying back more than owed is recorded as given, not capped at what Bo owed (7.00).
+    ledger = example_group()
+    ledger.add_settlement("Bo", "Ana", 1000)
+    assert ledger.balances() == {"Ana": 700, "Bo": 300, "Cy": -1000}
+    assert sum(ledger.balances().values()) == 0
+    assert len(ledger.settlements) == 1
+
+
+def test_round_trip_keeps_settlements_among_expenses():
+    # The file format (a sensitive area): a settlement is an entry of kind "settlement" between expenses,
+    # written with display names, and read back to the same entries in the same order.
+    ledger = example_group()
+    ledger.add_settlement("bo", "ana", 700)
+    ledger.add_expense("Cy", 300, ["Ana", "Cy"])
+    data = ledger.to_dict()
+    assert data["entries"][2] == {"kind": "settlement", "payer": "Bo", "receiver": "Ana", "amount": 700}
+    assert [e["kind"] for e in data["entries"]] == ["expense", "expense", "settlement", "expense"]
+    again = Ledger.from_dict(data)
+    assert again.entries == ledger.entries
+    assert again.balances() == ledger.balances() == {"Ana": 850, "Bo": 0, "Cy": -850}
+    assert again.to_dict() == data
