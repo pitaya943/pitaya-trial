@@ -296,3 +296,47 @@ def test_unreadable_or_non_object_file_is_refused(tmp_path, capsys):
     assert main(["--ledger", str(path), "add-member", "Dee"]) == 1
     assert capsys.readouterr().err == "error: ledger file is not UTF-8 text\n"
     assert path.read_bytes() == before
+
+
+# --- fix round 1 (T-006 verifier, PR #27) -------------------------------------------
+
+
+def test_v01_expense_kind_comes_from_the_format_not_the_file(tmp_path, capsys):
+    # Problem 1. v0.1 has no "kind": every item under "expenses" is an expense, whatever stray
+    # "kind" it carries. Read as a settlement, Ana -> Bo 10.00 would give Ana 10.00 / Bo -10.00
+    # and drop the participants on save; as the expense it is, Ana 5.00 / Bo -5.00.
+    for kind in ("settlement", "gift", None, ["expense"]):
+        path = tmp_path / "t.json"
+        expense = {"kind": kind, "payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"],
+                   "receiver": "Bo", "note": ""}
+        path.write_text(json.dumps({"members": ["Ana", "Bo"], "expenses": [expense]}))
+        os.utime(path, ns=(1_000_000_000, 1_000_000_000))
+        before, mtime = path.read_bytes(), path.stat().st_mtime_ns
+        assert main(["--ledger", str(path), "balances"]) == 0, kind
+        assert capsys.readouterr() == ("Ana\t5.00\nBo\t-5.00\n", ""), kind
+        assert (path.read_bytes(), path.stat().st_mtime_ns) == (before, mtime), kind  # read-only
+        assert main(["--ledger", str(path), "add-member", "Dee"]) == 0, kind
+        assert json.loads(path.read_text())["entries"] == [
+            {"kind": "expense", "payer": "Ana", "amount": 1000, "participants": ["Ana", "Bo"], "note": ""}], kind
+
+
+def test_entry_kind_that_is_not_a_known_string_is_refused(tmp_path, capsys):
+    # Problem 2. A list or an object can't be looked up in a dict (TypeError: unhashable), so the
+    # kind must be checked to be a string first. Second entry, so the position is checked too.
+    good = '{"kind": "expense", "payer": "Ana", "amount": 100, "participants": ["Ana"]}'
+    for kind, shown in (('["expense"]', "['expense']"), ("{}", "{}"), ('"Expense"', "'Expense'"),
+                        ("1", "1")):
+        text = f'{{"version": 2, "members": ["Ana", "Bo"], "entries": [{good}, {{"kind": {kind}}}]}}'
+        _refused_untouched(tmp_path / "t.json", text, capsys, f"error: entry 2 has unknown kind {shown}\n")
+
+
+def test_too_deeply_nested_or_too_long_json_is_refused(tmp_path, capsys):
+    # Problem 3. json.loads raises RecursionError for very deep nesting and a plain ValueError (not a
+    # JSONDecodeError) for an integer over Python's digit limit; both must be one line, no traceback.
+    # 500 levels decode fine (and are then refused as a list), so the depth case is really deep.
+    _refused_untouched(tmp_path / "t.json", "[" * 100_000, capsys,
+                       "error: ledger file is not valid JSON: nested too deeply\n")
+    _refused_untouched(tmp_path / "t.json", "[" * 100_000 + "]" * 100_000, capsys,
+                       "error: ledger file is not valid JSON: nested too deeply\n")
+    _refused_untouched(tmp_path / "t.json", '{"version": ' + "1" * 5000 + "}", capsys,
+                       "error: ledger file is not valid JSON: a number has too many digits\n")
