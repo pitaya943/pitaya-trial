@@ -30,6 +30,12 @@ def load(path: Path) -> Ledger:
         # exc.msg without its "(char n)" tail; line and column are what an editor shows.
         raise TallyError(f"ledger file is not valid JSON: {exc.msg} at line {exc.lineno}, "
                          f"column {exc.colno}") from None
+    except RecursionError:  # deeper nesting than the decoder's stack allows
+        raise TallyError("ledger file is not valid JSON: nested too deeply") from None
+    except ValueError:
+        # After JSONDecodeError (a subclass), the one plain ValueError json.loads raises on text is an
+        # integer over Python's digit limit (3.11+). A fixed message: Python's own wording varies by version.
+        raise TallyError("ledger file is not valid JSON: a number has too many digits") from None
     return Ledger.from_dict(data)
 
 

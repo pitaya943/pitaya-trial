@@ -143,18 +143,13 @@ class Ledger:
         """
         if not isinstance(data, dict):
             raise TallyError(f"ledger file must be a JSON object, not {_json_type(data)}")
-        if "version" not in data:  # v0.1: each expense becomes an entry of kind "expense", same order
+        if "version" not in data:  # v0.1: an "expenses" list; every item is an expense
             if "entries" in data:  # a version 2 body that lost its version line, not a v0.1 file
                 raise TallyError('ledger file has "entries" but no "version"')
-            expenses = data.get("expenses", [])
-            if not isinstance(expenses, list):
+            items = data.get("expenses", [])
+            if not isinstance(items, list):
                 raise TallyError('a ledger file with no "version" needs an "expenses" list')
-            entries = []
-            for n, e in enumerate(expenses, start=1):
-                if not isinstance(e, dict):
-                    raise TallyError(f"expense {n} is not an object")
-                _check_fields(e, f"expense {n}", _NEEDS["expense"])
-                entries.append({"kind": "expense", **e})
+            label, fixed_kind = "expense", "expense"
         else:
             version = data["version"]
             # `type(...) is int` because True == 1 and isinstance(True, int): a bool is not a version.
@@ -164,20 +159,26 @@ class Ledger:
                 raise TallyError(f"unsupported ledger version {version!r} (this tally reads {FORMAT_VERSION}, "
                                  "or a file with no version)")
             # No default: a missing "entries" must not read as "no entries" (S-16).
-            entries = data.get("entries")
-            if not isinstance(entries, list):
+            items = data.get("entries")
+            if not isinstance(items, list):
                 raise TallyError(f'ledger version {FORMAT_VERSION} needs an "entries" list')
-            for n, e in enumerate(entries, start=1):
-                if not isinstance(e, dict):
-                    raise TallyError(f"entry {n} is not an object")
-                if e.get("kind") not in _NEEDS:
-                    raise TallyError(f"entry {n} has unknown kind {e.get('kind')!r}")
-                _check_fields(e, f"entry {n} ({e['kind']})", _NEEDS[e["kind"]])
+            label, fixed_kind = "entry", None
         ledger = cls()
         for name in data.get("members", []):
             ledger.add_member(name)
-        for e in entries:
-            if e["kind"] == "expense":
+        # One loop for both formats, so every item passes the same checks before it is recorded.
+        # A raise here discards the half-built ledger: from_dict never returns it, nothing reaches save().
+        for n, e in enumerate(items, start=1):
+            where = f"{label} {n}"
+            if not isinstance(e, dict):
+                raise TallyError(f"{where} is not an object")
+            # v0.1 has no kinds: the format says "expense", and a stray "kind" in the file is ignored.
+            kind = fixed_kind or e.get("kind")
+            # isinstance first: a list or object kind is unhashable, so `in _NEEDS` would raise TypeError.
+            if not isinstance(kind, str) or kind not in _NEEDS:
+                raise TallyError(f"{where} has unknown kind {kind!r}")
+            _check_fields(e, where if fixed_kind else f"{where} ({kind})", _NEEDS[kind])
+            if kind == "expense":
                 ledger.add_expense(e["payer"], e["amount"], e["participants"], e.get("note", ""))
             else:
                 ledger.add_settlement(e["payer"], e["receiver"], e["amount"])
