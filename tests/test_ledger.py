@@ -96,3 +96,9 @@ def test_unknown_entry_kind_is_rejected():
     data = {"version": 2, "members": ["Ana"], "entries": [{"kind": "gift", "payer": "Ana", "amount": 1}]}
     with pytest.raises(TallyError, match="'gift'"):
         Ledger.from_dict(data)
+
+
+def test_version_must_be_the_integer_2():
+    # 2.0 == 2 in Python, so only a type check refuses it; D-11 accepts the integer 2 alone.
+    with pytest.raises(TallyError, match=r"2\.0"):
+        Ledger.from_dict({"version": 2.0, "members": [], "entries": []})
