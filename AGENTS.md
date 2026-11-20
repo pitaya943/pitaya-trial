@@ -9,6 +9,13 @@ A short map for coding agents. Details live in the files it points to; read them
 - Before planning or building, read `docs/agents/learnings.md`, and the parts of `docs/agents/architecture.md` and `docs/agents/glossary.md` your work touches.
 - Work on a branch, never on `main`.
 
+## Branches
+
+The Owner grants this once for every session in this repository, including cloud sessions that were given an assigned branch: use the branch names the pitaya skills ask for, and create and push them without asking again.
+
+- `plan/<slug>` for plan PRs, `ticket/<id>-<slug>` for tickets, `milestone/M<n>` for an active milestone, `setup/<slug>` for harness setup.
+- Never push to `main` or force-push any branch. The rulesets on `main` and `milestone/*` still require a pull request.
+
 ## Commands
 
 - Test: `.venv/bin/python -m pytest -q`. Run it after every change and before saying anything is done.
